@@ -1,0 +1,5 @@
+:root { font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; color: #26364b; background: #f1f4f8; font-synthesis: none; }
+* { box-sizing: border-box; }
+html, body, #app { min-width: 320px; min-height: 100%; margin: 0; }
+body { min-height: 100vh; }
+button, input { font: inherit; }

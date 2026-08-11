@@ -1,9 +1,12 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import BaseChart from '@/components/charts/BaseChart.vue'
+import EquipmentEventTable from '@/components/equipment/EquipmentEventTable.vue'
 import FailurePrediction from '@/components/equipment/FailurePrediction.vue'
 import { equipmentList } from '@/mock/equipment'
 import { analyzeRiskFactors, evaluateEquipmentHealth, simulateFailureProbability } from '@/equipmentHealth'
+import { createEquipmentEvent, getEquipmentEvents, updateEquipmentEventStatus } from '@/equipmentEvent'
 
 const failureCatalog = {
   vibration: '主传动轴承异常', temperature: '冷却或散热系统异常', pressure: '液压系统压力异常', load: '主传动过载风险', runtime: '关键部件寿命衰减',
@@ -39,6 +42,7 @@ const normalCount = computed(() => records.filter((item) => item.riskLevel === '
 const riskCount = computed(() => records.filter((item) => item.riskLevel !== '低风险').length)
 const highRiskCount = computed(() => records.filter((item) => item.riskLevel === '高风险').length)
 const averageProbability = computed(() => Math.round(records.reduce((sum, item) => sum + item.failureProbability, 0) / records.length))
+const events = ref([])
 const trendLabels = ['-7d', '-6d', '-5d', '-4d', '-3d', '-2d', '当前']
 
 const chartOption = computed(() => {
@@ -55,6 +59,42 @@ const chartOption = computed(() => {
     series: [{ name: '健康评分趋势', type: 'line', smooth: true, data: scoreTrend, areaStyle: { color: 'rgba(50,213,196,.08)' } }, { name: '故障概率趋势', type: 'line', yAxisIndex: 1, smooth: true, data: probabilityTrend, areaStyle: { color: 'rgba(255,173,69,.06)' } }],
   }
 })
+
+function toEventInput(record, manual = false) {
+  const primaryRisk = record.riskFactors.find((item) => item.severity === 'high') || record.riskFactors[0]
+  return {
+    equipmentId: record.id, equipmentName: record.name, source: '故障预测',
+    type: primaryRisk ? `${primaryRisk.key}_warning` : 'health_attention',
+    typeLabel: primaryRisk ? `${primaryRisk.label}异常` : '设备健康关注',
+    level: record.riskLevel === '高风险' ? 'high' : record.riskLevel === '中风险' ? 'medium' : 'low',
+    title: record.predictedFailure, description: record.reason,
+    currentValue: primaryRisk?.value ?? record.failureProbability,
+    threshold: primaryRisk?.warningThreshold ?? 50, unit: primaryRisk?.unit || '%',
+    healthScore: record.score, failureProbability: record.failureProbability,
+    suggestion: record.recommendedChecks, manual,
+  }
+}
+
+function refreshEvents() { events.value = getEquipmentEvents() }
+
+function generateRiskEvent(record) {
+  const result = createEquipmentEvent(toEventInput(record, true))
+  refreshEvents()
+  if (result.created) ElMessage.success('已生成设备风险事件。')
+  else if (result.reason === 'duplicate') ElMessage.warning('该设备同类未关闭风险事件已存在。')
+}
+
+function changeEventStatus(eventId, status) {
+  const result = updateEquipmentEventStatus(eventId, status)
+  if (!result.updated) return ElMessage.error('风险事件状态更新失败。')
+  refreshEvents()
+  ElMessage.success(status === 'confirmed' ? '风险事件已确认。' : '风险事件已关闭。')
+}
+
+onMounted(() => {
+  records.forEach((record) => createEquipmentEvent(toEventInput(record)))
+  refreshEvents()
+})
 </script>
 
 <template>
@@ -68,12 +108,14 @@ const chartOption = computed(() => {
       <div><span>平均故障概率</span><strong class="cyan">{{ averageProbability }}<small>%</small></strong><el-icon><DataAnalysis /></el-icon></div>
     </section>
 
-    <FailurePrediction :records="records" :selected-id="selectedId" @select="selectedId = $event" />
+    <FailurePrediction :records="records" :selected-id="selectedId" @select="selectedId = $event" @generate-event="generateRiskEvent" />
+
+    <EquipmentEventTable :events="events" @status-change="changeEventStatus" />
 
     <section class="trend-panel"><header><div><i></i><h3>{{ selected.name }} · 风险趋势分析</h3><span>{{ selected.id }} SIMULATED PREDICTION TREND</span></div><small>模拟预测趋势 · 故障预测演示 · 基于工业仿真数据</small></header><BaseChart :option="chartOption" height="285px" /></section>
   </div>
 </template>
 
 <style scoped>
-.prediction-page{color:#dcecf7}.page-header{display:flex;align-items:center;justify-content:space-between;padding:4px 2px 15px}.page-header p{margin:0 0 4px;color:#3d9ccb;font:10px Consolas;letter-spacing:2px}.page-header h2{margin:0;color:#edf8ff;font-size:21px}.page-header>span{color:#6e91aa;font-size:11px}.page-header i{display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#ffad45;box-shadow:0 0 8px #ffad45}.overview{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:12px}.overview>div{position:relative;min-height:82px;padding:15px 18px;overflow:hidden;background:linear-gradient(135deg,#0d3554,#092640);border:1px solid #214d6b}.overview span{display:block;color:#7293aa;font-size:10px}.overview strong{display:block;margin-top:7px;color:#dcecf7;font:600 25px Consolas}.overview small{margin-left:4px;color:#6d8da4;font:10px "Microsoft YaHei"}.overview .el-icon{position:absolute;right:18px;top:25px;color:#245f82;font-size:30px}.green{color:#2bd398!important}.orange{color:#ffad45!important}.red{color:#ef6262!important}.cyan{color:#31c9df!important}.trend-panel{margin-top:12px;padding:0 15px 4px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.trend-panel>header{display:flex;align-items:center;justify-content:space-between;height:45px;border-bottom:1px solid rgba(55,107,142,.35)}.trend-panel header>div{display:flex;align-items:center;gap:8px}.trend-panel header i{width:3px;height:15px;background:#2bb7ec;box-shadow:0 0 8px #2bb7ec}.trend-panel h3{margin:0;font-size:14px}.trend-panel header span,.trend-panel header small{color:#557a92;font:9px Consolas}@media(max-width:1200px){.overview{grid-template-columns:repeat(3,1fr)}}@media(max-width:700px){.overview{grid-template-columns:repeat(2,1fr)}.page-header{align-items:flex-start;flex-direction:column;gap:8px}}
+.prediction-page{color:#dcecf7}.page-header{display:flex;align-items:center;justify-content:space-between;padding:4px 2px 15px}.page-header p{margin:0 0 4px;color:#3d9ccb;font:10px Consolas;letter-spacing:2px}.page-header h2{margin:0;color:#edf8ff;font-size:21px}.page-header>span{color:#6e91aa;font-size:11px}.page-header i{display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#ffad45;box-shadow:0 0 8px #ffad45}.overview{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:12px}.overview>div{position:relative;min-height:82px;padding:15px 18px;overflow:hidden;background:linear-gradient(135deg,#0d3554,#092640);border:1px solid #214d6b}.overview span{display:block;color:#7293aa;font-size:10px}.overview strong{display:block;margin-top:7px;color:#dcecf7;font:600 25px Consolas}.overview small{margin-left:4px;color:#6d8da4;font:10px "Microsoft YaHei"}.overview .el-icon{position:absolute;right:18px;top:25px;color:#245f82;font-size:30px}.green{color:#2bd398!important}.orange{color:#ffad45!important}.red{color:#ef6262!important}.cyan{color:#31c9df!important}.event-panel{margin-top:12px}.trend-panel{margin-top:12px;padding:0 15px 4px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.trend-panel>header{display:flex;align-items:center;justify-content:space-between;height:45px;border-bottom:1px solid rgba(55,107,142,.35)}.trend-panel header>div{display:flex;align-items:center;gap:8px}.trend-panel header i{width:3px;height:15px;background:#2bb7ec;box-shadow:0 0 8px #2bb7ec}.trend-panel h3{margin:0;font-size:14px}.trend-panel header span,.trend-panel header small{color:#557a92;font:9px Consolas}@media(max-width:1200px){.overview{grid-template-columns:repeat(3,1fr)}}@media(max-width:700px){.overview{grid-template-columns:repeat(2,1fr)}.page-header{align-items:flex-start;flex-direction:column;gap:8px}}
 </style>

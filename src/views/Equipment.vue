@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import BaseChart from '@/components/charts/BaseChart.vue'
 import EquipmentCard from '@/components/equipment/EquipmentCard.vue'
-import HealthDiagnosis from '@/components/equipment/HealthDiagnosis.vue'
 import { createTrendData, equipmentList, statusMap, trendTimes, vary } from '@/mock/equipment'
 import { evaluateEquipmentList } from '@/equipmentHealth'
 
@@ -18,12 +17,10 @@ const healthEvaluations = computed(() => evaluateEquipmentList(devices.value))
 const healthEvaluationMap = computed(() => Object.fromEntries(healthEvaluations.value.map((item) => [item.equipmentId, item])))
 const filteredDevices = computed(() => filterType.value === '全部设备' ? devices.value : devices.value.filter((item) => item.type === filterType.value))
 const selectedDevice = computed(() => devices.value.find((item) => item.id === selectedId.value) || devices.value[0])
-const selectedHealth = computed(() => healthEvaluationMap.value[selectedDevice.value.id])
-const detailHealth = computed(() => detailDevice.value ? healthEvaluationMap.value[detailDevice.value.id] : null)
-const normalCount = computed(() => healthEvaluations.value.filter((item) => item.score >= 80).length)
-const warningCount = computed(() => healthEvaluations.value.filter((item) => item.score >= 65 && item.score < 80).length)
-const highRiskCount = computed(() => healthEvaluations.value.filter((item) => item.score < 65).length)
-const averageHealth = computed(() => Math.round(healthEvaluations.value.reduce((sum, item) => sum + item.score, 0) / healthEvaluations.value.length))
+const runningCount = computed(() => devices.value.filter((item) => item.status === 'running').length)
+const warningCount = computed(() => devices.value.filter((item) => item.status === 'warning').length)
+const averageLoad = computed(() => Math.round(devices.value.reduce((sum, item) => sum + item.load, 0) / devices.value.length))
+const totalRuntime = computed(() => devices.value.reduce((sum, item) => sum + item.runtime, 0))
 
 const chartOption = computed(() => {
   const data = trends.value[selectedDevice.value.id]
@@ -65,24 +62,23 @@ onBeforeUnmount(() => window.clearInterval(timer))
 
 <template>
   <div class="equipment-page">
-    <section class="page-header"><div><p>EQUIPMENT HEALTH MANAGEMENT</p><h2>生产设备状态分析</h2></div><div class="online"><i></i>预测维护演示 · 基于工业仿真数据</div></section>
+    <section class="page-header"><div><p>EQUIPMENT OPERATION OVERVIEW</p><h2>设备总览</h2></div><div class="online"><i></i>模拟数据运行 · 工业仿真数据</div></section>
     <section class="overview">
       <div><span>设备总数</span><strong>{{ devices.length }}<small>台/套</small></strong><el-icon><Cpu /></el-icon></div>
-      <div><span>正常设备</span><strong class="green">{{ normalCount }}<small>台/套</small></strong><el-icon><CircleCheck /></el-icon></div>
+      <div><span>运行设备</span><strong class="green">{{ runningCount }}<small>台/套</small></strong><el-icon><CircleCheck /></el-icon></div>
       <div><span>预警设备</span><strong class="orange">{{ warningCount }}<small>台/套</small></strong><el-icon><Warning /></el-icon></div>
-      <div><span>高风险设备</span><strong class="red">{{ highRiskCount }}<small>台/套</small></strong><el-icon><WarnTriangleFilled /></el-icon></div>
-      <div><span>平均健康度</span><strong class="cyan">{{ averageHealth }}<small>分</small></strong><el-icon><Odometer /></el-icon></div>
+      <div><span>平均负载</span><strong class="cyan">{{ averageLoad }}<small>%</small></strong><el-icon><Odometer /></el-icon></div>
+      <div><span>累计运行</span><strong>{{ totalRuntime.toLocaleString() }}<small>小时</small></strong><el-icon><Timer /></el-icon></div>
     </section>
     <section class="toolbar"><div class="filter"><button v-for="type in types" :key="type" :class="{active:filterType===type}" @click="filterType=type">{{ type }}</button></div><span>预测维护演示 · 基于工业仿真数据</span></section>
     <section class="device-grid"><EquipmentCard v-for="device in filteredDevices" :key="device.id" :device="device" :health-evaluation="healthEvaluationMap[device.id]" :selected="selectedId===device.id" @select="selectDevice" @detail="showDetail" /></section>
-    <section class="trend-panel"><header><div><i></i><h3>{{ selectedDevice.name }} · 状态趋势</h3><span>{{ selectedDevice.id }} REAL-TIME TREND</span></div><div class="current-values"><span>负载率 <b>{{ selectedDevice.load }}%</b></span><span>健康评分 <b>{{ selectedHealth.score }}</b></span><span>故障概率 <b>{{ selectedHealth.failureProbability }}%</b></span></div></header><BaseChart :option="chartOption" height="310px" /></section>
+    <section class="trend-panel"><header><div><i></i><h3>{{ selectedDevice.name }} · 状态趋势</h3><span>{{ selectedDevice.id }} SIMULATION TREND</span></div><div class="current-values"><span>负载率 <b>{{ selectedDevice.load }}%</b></span><span>温度 <b>{{ selectedDevice.temperature }} ℃</b></span><span>振动 <b>{{ selectedDevice.vibration }} mm/s</b></span></div></header><BaseChart :option="chartOption" height="310px" /></section>
 
-    <el-dialog v-model="detailVisible" width="820px" title="设备运行详情">
+    <el-dialog v-model="detailVisible" width="660px" title="设备运行详情">
       <template v-if="detailDevice">
         <div class="detail-head"><div><small>{{ detailDevice.id }}</small><h3>{{ detailDevice.name }}</h3><p>{{ detailDevice.type }}</p></div><el-progress type="circle" :percentage="detailDevice.health" :width="92" :stroke-width="8" :color="detailDevice.health<85?'#e6a23c':'#20bfa9'"><template #default><b>{{ detailDevice.health }}</b><small>健康分</small></template></el-progress></div>
         <el-descriptions :column="2" border><el-descriptions-item label="运行状态"><el-tag :type="statusMap[detailDevice.status].type">{{ statusMap[detailDevice.status].label }}</el-tag></el-descriptions-item><el-descriptions-item label="累计运行">{{ detailDevice.runtime.toLocaleString() }} 小时</el-descriptions-item><el-descriptions-item label="实时温度">{{ detailDevice.temperature }} ℃</el-descriptions-item><el-descriptions-item label="系统压力">{{ detailDevice.pressure }} MPa</el-descriptions-item><el-descriptions-item label="振动速度">{{ detailDevice.vibration }} mm/s</el-descriptions-item><el-descriptions-item label="当前负载">{{ detailDevice.load }}%</el-descriptions-item><el-descriptions-item label="计划维护" :span="2">{{ detailDevice.maintenance }}</el-descriptions-item></el-descriptions>
         <el-alert v-if="detailDevice.status==='warning'" title="振动指标接近预警阈值，建议检查轧辊轴承与润滑状态。" type="warning" show-icon :closable="false" class="detail-alert" />
-        <HealthDiagnosis v-if="detailHealth" :device="detailDevice" :evaluation="detailHealth" />
       </template>
       <template #footer><el-button @click="detailVisible=false">关闭</el-button><el-button type="primary" @click="createWorkOrder">创建维护工单</el-button></template>
     </el-dialog>

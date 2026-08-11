@@ -17,7 +17,8 @@ const routes = [
     children: [
       { path: 'dashboard', name: 'Dashboard', component: () => import('@/views/Dashboard.vue'), meta: { title: '运行总览', icon: 'DataBoard', order: 1, roles: allRoles } },
       { path: 'production', name: 'Production', component: () => import('@/views/Production.vue'), meta: { title: '生产监控', icon: 'TrendCharts', order: 2, roles: ['admin', 'operator'] } },
-      { path: 'equipment', name: 'Equipment', component: () => import('@/views/Equipment.vue'), meta: { title: '设备管理', icon: 'Setting', order: 3, roles: ['admin', 'engineer'] } },
+      { path: 'equipment', name: 'Equipment', component: () => import('@/views/Equipment.vue'), meta: { title: '设备总览', icon: 'Monitor', order: 3, menuGroup: 'equipment', roles: ['admin', 'engineer'] } },
+      { path: 'equipment-health', name: 'EquipmentHealth', component: () => import('@/views/EquipmentHealth.vue'), meta: { title: '健康诊断', icon: 'FirstAidKit', order: 3.1, menuGroup: 'equipment', roles: ['admin', 'engineer'] } },
       { path: 'quality', name: 'Quality', component: () => import('@/views/Quality.vue'), meta: { title: '质量管理', icon: 'CircleCheck', order: 4, roles: ['admin', 'engineer'] } },
       { path: 'alarm', name: 'Alarm', component: () => import('@/views/Alarm.vue'), meta: { title: '报警中心', icon: 'Bell', order: 5, roles: ['admin'] } },
       { path: 'decision', name: 'Decision', component: () => import('@/views/Decision.vue'), meta: { title: '智能决策', icon: 'Opportunity', order: 6, roles: ['admin', 'engineer'] } },

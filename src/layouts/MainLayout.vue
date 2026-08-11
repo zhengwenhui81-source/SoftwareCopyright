@@ -10,10 +10,19 @@ const collapsed = ref(false)
 const user = computed(() => getUser())
 
 const menuItems = computed(() =>
-  router
+  {
+    const routes = router
     .getRoutes()
     .filter((item) => item.meta?.icon && hasRole(item.meta.roles))
-    .sort((a, b) => (a.meta.order || 0) - (b.meta.order || 0)),
+    const equipmentChildren = routes
+      .filter((item) => item.meta.menuGroup === 'equipment')
+      .sort((a, b) => (a.meta.order || 0) - (b.meta.order || 0))
+    const standaloneItems = routes.filter((item) => !item.meta.menuGroup)
+    return [
+      ...standaloneItems,
+      ...(equipmentChildren.length ? [{ path: 'equipment-group', isGroup: true, meta: { title: '设备管理', icon: 'Setting', order: 3 }, children: equipmentChildren }] : []),
+    ].sort((a, b) => (a.meta.order || 0) - (b.meta.order || 0))
+  },
 )
 
 function handleLogout() {
@@ -33,10 +42,19 @@ function handleLogout() {
         </div>
       </div>
       <el-menu :default-active="route.path" router :collapse="collapsed" class="side-menu">
-        <el-menu-item v-for="item in menuItems" :key="item.path" :index="item.path">
-          <el-icon><component :is="ElementPlusIconsVue[item.meta.icon]" /></el-icon>
-          <template #title>{{ item.meta.title }}</template>
-        </el-menu-item>
+        <template v-for="item in menuItems" :key="item.path">
+          <el-sub-menu v-if="item.isGroup && item.children.length > 0" :index="item.path">
+            <template #title><el-icon><component :is="ElementPlusIconsVue[item.meta.icon]" /></el-icon><span>{{ item.meta.title }}</span></template>
+            <el-menu-item v-for="child in item.children" :key="child.path" :index="child.path">
+              <el-icon><component :is="ElementPlusIconsVue[child.meta.icon]" /></el-icon>
+              <template #title>{{ child.meta.title }}</template>
+            </el-menu-item>
+          </el-sub-menu>
+          <el-menu-item v-else :index="item.path">
+            <el-icon><component :is="ElementPlusIconsVue[item.meta.icon]" /></el-icon>
+            <template #title>{{ item.meta.title }}</template>
+          </el-menu-item>
+        </template>
       </el-menu>
     </el-aside>
 
@@ -84,6 +102,10 @@ function handleLogout() {
 .side-menu :deep(.el-menu-item) { color: #a9bad0; margin: 5px 8px; border-radius: 6px; height: 48px; }
 .side-menu :deep(.el-menu-item:hover) { background: #183a60; color: white; }
 .side-menu :deep(.el-menu-item.is-active) { background: #1768c4; color: white; }
+.side-menu :deep(.el-sub-menu__title) { color: #a9bad0; margin: 5px 8px; border-radius: 6px; height: 48px; }
+.side-menu :deep(.el-sub-menu__title:hover) { background: #183a60; color: white; }
+.side-menu :deep(.el-sub-menu .el-menu) { background: #0c1e34; }
+.side-menu :deep(.el-sub-menu .el-menu-item) { min-width: auto; padding-left: 48px!important; height: 42px; }
 .topbar { height: 72px; background: white; border-bottom: 1px solid #e5eaf0; display: flex; align-items: center; justify-content: space-between; padding: 0 24px 0 14px; }
 .topbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .topbar h1 { margin: 0; color: #1b2b42; font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

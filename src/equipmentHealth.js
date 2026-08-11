@@ -122,12 +122,65 @@ export function simulateFailureProbability(device, score = calculateHealthScore(
   return Math.round(clamp(3 + baseProbability + riskProbability + stableDeviceOffset(device?.id), 3, 95))
 }
 
+const diagnosisCatalog = {
+  vibration: {
+    abnormal: '设备振动指标升高',
+    component: '传动侧轴承及联轴器',
+    checks: ['检查轴承润滑状态', '复核设备振动频谱', '检查传动系统连接与紧固状态'],
+  },
+  temperature: {
+    abnormal: '设备温度指标升高',
+    component: '冷却回路及高温工作部件',
+    checks: ['检查冷却介质流量', '复核温度测点状态', '检查高温部件散热情况'],
+  },
+  pressure: {
+    abnormal: '系统压力偏离安全区间',
+    component: '液压泵组、阀组及密封件',
+    checks: ['检查液压回路压力', '检查阀组工作状态', '排查管路及密封件泄漏'],
+  },
+  load: {
+    abnormal: '设备负载持续偏高',
+    component: '主传动电机及负载执行机构',
+    checks: ['核对生产负载设定', '检查主电机电流', '检查执行机构运行阻力'],
+  },
+  runtime: {
+    abnormal: '设备累计运行时间接近维护周期',
+    component: '周期维护部件及易损件',
+    checks: ['核对预防性维护周期', '检查关键易损件状态', '安排停机点检窗口'],
+  },
+}
+
+/** 根据健康评价结果生成可解释的模拟诊断结论。 */
+export function generateHealthDiagnosis(device, evaluation) {
+  const risks = evaluation?.riskFactors || analyzeRiskFactors(device)
+  const primaryRisk = [...risks].sort((a, b) => {
+    const severity = { high: 2, medium: 1 }
+    return (severity[b.severity] || 0) - (severity[a.severity] || 0)
+  })[0]
+
+  if (!primaryRisk) {
+    return {
+      mainAbnormality: '当前关键指标未超过模拟预警阈值',
+      possibleRiskComponent: '未发现明确高风险部件',
+      recommendedChecks: ['保持例行巡检', '持续观察温度、压力与振动趋势', '按计划执行预防性维护'],
+    }
+  }
+
+  const conclusion = diagnosisCatalog[primaryRisk.key] || diagnosisCatalog.runtime
+  return {
+    mainAbnormality: conclusion.abnormal,
+    possibleRiskComponent: `${device?.type || '设备'} · ${conclusion.component}`,
+    recommendedChecks: [...conclusion.checks],
+  }
+}
+
 /** 一次返回设备健康评价所需的完整结果。 */
 export function evaluateEquipmentHealth(device) {
   const score = calculateHealthScore(device)
   const level = getHealthLevel(score)
   const riskFactors = analyzeRiskFactors(device)
   const failureProbability = simulateFailureProbability(device, score, riskFactors)
+  const evaluation = { score, level, riskFactors, failureProbability }
 
   return {
     equipmentId: device?.id || '',
@@ -136,6 +189,7 @@ export function evaluateEquipmentHealth(device) {
     level,
     riskFactors,
     failureProbability,
+    diagnosis: generateHealthDiagnosis(device, evaluation),
     predictionWindow: '未来24小时',
     dataMode: '工业仿真数据',
   }

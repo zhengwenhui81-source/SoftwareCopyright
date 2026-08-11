@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import BaseChart from '@/components/charts/BaseChart.vue'
 import EquipmentCard from '@/components/equipment/EquipmentCard.vue'
+import HealthDiagnosis from '@/components/equipment/HealthDiagnosis.vue'
 import { createTrendData, equipmentList, statusMap, trendTimes, vary } from '@/mock/equipment'
 import { evaluateEquipmentList } from '@/equipmentHealth'
 
@@ -18,6 +19,7 @@ const healthEvaluationMap = computed(() => Object.fromEntries(healthEvaluations.
 const filteredDevices = computed(() => filterType.value === '全部设备' ? devices.value : devices.value.filter((item) => item.type === filterType.value))
 const selectedDevice = computed(() => devices.value.find((item) => item.id === selectedId.value) || devices.value[0])
 const selectedHealth = computed(() => healthEvaluationMap.value[selectedDevice.value.id])
+const detailHealth = computed(() => detailDevice.value ? healthEvaluationMap.value[detailDevice.value.id] : null)
 const normalCount = computed(() => healthEvaluations.value.filter((item) => item.score >= 80).length)
 const warningCount = computed(() => healthEvaluations.value.filter((item) => item.score >= 65 && item.score < 80).length)
 const highRiskCount = computed(() => healthEvaluations.value.filter((item) => item.score < 65).length)
@@ -42,8 +44,8 @@ const chartOption = computed(() => {
   }
 })
 
-function selectDevice(device) { selectedId.value = device.id }
-function showDetail(device) { detailDevice.value = device; detailVisible.value = true }
+function selectDevice(device) { selectedId.value = device.id; showDetail(device) }
+function showDetail(device) { selectedId.value = device.id; detailDevice.value = device; detailVisible.value = true }
 function createWorkOrder() { ElMessage.success(`已为 ${detailDevice.value.name} 创建预防性维护工单`) }
 function updateDevices() {
   devices.value.forEach((device) => {
@@ -75,11 +77,12 @@ onBeforeUnmount(() => window.clearInterval(timer))
     <section class="device-grid"><EquipmentCard v-for="device in filteredDevices" :key="device.id" :device="device" :health-evaluation="healthEvaluationMap[device.id]" :selected="selectedId===device.id" @select="selectDevice" @detail="showDetail" /></section>
     <section class="trend-panel"><header><div><i></i><h3>{{ selectedDevice.name }} · 状态趋势</h3><span>{{ selectedDevice.id }} REAL-TIME TREND</span></div><div class="current-values"><span>负载率 <b>{{ selectedDevice.load }}%</b></span><span>健康评分 <b>{{ selectedHealth.score }}</b></span><span>故障概率 <b>{{ selectedHealth.failureProbability }}%</b></span></div></header><BaseChart :option="chartOption" height="310px" /></section>
 
-    <el-dialog v-model="detailVisible" width="660px" title="设备运行详情">
+    <el-dialog v-model="detailVisible" width="820px" title="设备运行详情">
       <template v-if="detailDevice">
         <div class="detail-head"><div><small>{{ detailDevice.id }}</small><h3>{{ detailDevice.name }}</h3><p>{{ detailDevice.type }}</p></div><el-progress type="circle" :percentage="detailDevice.health" :width="92" :stroke-width="8" :color="detailDevice.health<85?'#e6a23c':'#20bfa9'"><template #default><b>{{ detailDevice.health }}</b><small>健康分</small></template></el-progress></div>
         <el-descriptions :column="2" border><el-descriptions-item label="运行状态"><el-tag :type="statusMap[detailDevice.status].type">{{ statusMap[detailDevice.status].label }}</el-tag></el-descriptions-item><el-descriptions-item label="累计运行">{{ detailDevice.runtime.toLocaleString() }} 小时</el-descriptions-item><el-descriptions-item label="实时温度">{{ detailDevice.temperature }} ℃</el-descriptions-item><el-descriptions-item label="系统压力">{{ detailDevice.pressure }} MPa</el-descriptions-item><el-descriptions-item label="振动速度">{{ detailDevice.vibration }} mm/s</el-descriptions-item><el-descriptions-item label="当前负载">{{ detailDevice.load }}%</el-descriptions-item><el-descriptions-item label="计划维护" :span="2">{{ detailDevice.maintenance }}</el-descriptions-item></el-descriptions>
         <el-alert v-if="detailDevice.status==='warning'" title="振动指标接近预警阈值，建议检查轧辊轴承与润滑状态。" type="warning" show-icon :closable="false" class="detail-alert" />
+        <HealthDiagnosis v-if="detailHealth" :device="detailDevice" :evaluation="detailHealth" />
       </template>
       <template #footer><el-button @click="detailVisible=false">关闭</el-button><el-button type="primary" @click="createWorkOrder">创建维护工单</el-button></template>
     </el-dialog>

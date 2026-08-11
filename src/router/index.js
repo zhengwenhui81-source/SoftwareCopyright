@@ -20,6 +20,7 @@ const routes = [
       { path: 'equipment', name: 'Equipment', component: () => import('@/views/Equipment.vue'), meta: { title: '设备总览', icon: 'Monitor', order: 3, menuGroup: 'equipment', roles: ['admin', 'engineer'] } },
       { path: 'equipment-health', name: 'EquipmentHealth', component: () => import('@/views/EquipmentHealth.vue'), meta: { title: '健康诊断', icon: 'FirstAidKit', order: 3.1, menuGroup: 'equipment', roles: ['admin', 'engineer'] } },
       { path: 'equipment-prediction', name: 'EquipmentPrediction', component: () => import('@/views/EquipmentPrediction.vue'), meta: { title: '故障预测', icon: 'Warning', order: 3.2, menuGroup: 'equipment', roles: ['admin', 'engineer'] } },
+      { path: 'maintenance', name: 'Maintenance', component: () => import('@/views/Maintenance.vue'), meta: { title: '维护管理', icon: 'Tools', order: 3.3, menuGroup: 'equipment', roles: ['admin', 'engineer'] } },
       { path: 'quality', name: 'Quality', component: () => import('@/views/Quality.vue'), meta: { title: '质量管理', icon: 'CircleCheck', order: 4, roles: ['admin', 'engineer'] } },
       { path: 'alarm', name: 'Alarm', component: () => import('@/views/Alarm.vue'), meta: { title: '报警中心', icon: 'Bell', order: 5, roles: ['admin'] } },
       { path: 'decision', name: 'Decision', component: () => import('@/views/Decision.vue'), meta: { title: '智能决策', icon: 'Opportunity', order: 6, roles: ['admin', 'engineer'] } },

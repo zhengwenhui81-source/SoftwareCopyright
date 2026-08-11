@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import BaseChart from '@/components/charts/BaseChart.vue'
 import EquipmentCard from '@/components/equipment/EquipmentCard.vue'
 import { createTrendData, equipmentList, statusMap, trendTimes, vary } from '@/mock/equipment'
+import { evaluateEquipmentList } from '@/equipmentHealth'
 
 const devices = ref(equipmentList.map((item) => ({ ...item })))
 const filterType = ref('全部设备')
@@ -12,10 +13,15 @@ const detailVisible = ref(false)
 const detailDevice = ref(null)
 const trends = ref(Object.fromEntries(devices.value.map((device) => [device.id, createTrendData(device)])))
 const types = ['全部设备', ...new Set(equipmentList.map((item) => item.type))]
+const healthEvaluations = computed(() => evaluateEquipmentList(devices.value))
+const healthEvaluationMap = computed(() => Object.fromEntries(healthEvaluations.value.map((item) => [item.equipmentId, item])))
 const filteredDevices = computed(() => filterType.value === '全部设备' ? devices.value : devices.value.filter((item) => item.type === filterType.value))
 const selectedDevice = computed(() => devices.value.find((item) => item.id === selectedId.value) || devices.value[0])
-const runningCount = computed(() => devices.value.filter((item) => item.status === 'running').length)
-const averageHealth = computed(() => Math.round(devices.value.reduce((sum, item) => sum + item.health, 0) / devices.value.length))
+const selectedHealth = computed(() => healthEvaluationMap.value[selectedDevice.value.id])
+const normalCount = computed(() => healthEvaluations.value.filter((item) => item.score >= 80).length)
+const warningCount = computed(() => healthEvaluations.value.filter((item) => item.score >= 65 && item.score < 80).length)
+const highRiskCount = computed(() => healthEvaluations.value.filter((item) => item.score < 65).length)
+const averageHealth = computed(() => Math.round(healthEvaluations.value.reduce((sum, item) => sum + item.score, 0) / healthEvaluations.value.length))
 
 const chartOption = computed(() => {
   const data = trends.value[selectedDevice.value.id]
@@ -57,16 +63,17 @@ onBeforeUnmount(() => window.clearInterval(timer))
 
 <template>
   <div class="equipment-page">
-    <section class="page-header"><div><p>EQUIPMENT HEALTH MANAGEMENT</p><h2>生产设备状态分析</h2></div><div class="online"><i></i>工业仿真数据 <b>{{ runningCount }}/{{ devices.length }}</b></div></section>
+    <section class="page-header"><div><p>EQUIPMENT HEALTH MANAGEMENT</p><h2>生产设备状态分析</h2></div><div class="online"><i></i>预测维护演示 · 基于工业仿真数据</div></section>
     <section class="overview">
       <div><span>设备总数</span><strong>{{ devices.length }}<small>台/套</small></strong><el-icon><Cpu /></el-icon></div>
-      <div><span>运行设备</span><strong class="green">{{ runningCount }}<small>台/套</small></strong><el-icon><VideoPlay /></el-icon></div>
-      <div><span>预警设备</span><strong class="orange">{{ devices.filter(item=>item.status==='warning').length }}<small>台/套</small></strong><el-icon><Warning /></el-icon></div>
+      <div><span>正常设备</span><strong class="green">{{ normalCount }}<small>台/套</small></strong><el-icon><CircleCheck /></el-icon></div>
+      <div><span>预警设备</span><strong class="orange">{{ warningCount }}<small>台/套</small></strong><el-icon><Warning /></el-icon></div>
+      <div><span>高风险设备</span><strong class="red">{{ highRiskCount }}<small>台/套</small></strong><el-icon><WarnTriangleFilled /></el-icon></div>
       <div><span>平均健康度</span><strong class="cyan">{{ averageHealth }}<small>分</small></strong><el-icon><Odometer /></el-icon></div>
     </section>
-    <section class="toolbar"><div class="filter"><button v-for="type in types" :key="type" :class="{active:filterType===type}" @click="filterType=type">{{ type }}</button></div><span>最后更新：实时</span></section>
-    <section class="device-grid"><EquipmentCard v-for="device in filteredDevices" :key="device.id" :device="device" :selected="selectedId===device.id" @select="selectDevice" @detail="showDetail" /></section>
-    <section class="trend-panel"><header><div><i></i><h3>{{ selectedDevice.name }} · 状态趋势</h3><span>{{ selectedDevice.id }} REAL-TIME TREND</span></div><div class="current-values"><span>负载率 <b>{{ selectedDevice.load }}%</b></span><span>健康度 <b>{{ selectedDevice.health }}</b></span></div></header><BaseChart :option="chartOption" height="310px" /></section>
+    <section class="toolbar"><div class="filter"><button v-for="type in types" :key="type" :class="{active:filterType===type}" @click="filterType=type">{{ type }}</button></div><span>预测维护演示 · 基于工业仿真数据</span></section>
+    <section class="device-grid"><EquipmentCard v-for="device in filteredDevices" :key="device.id" :device="device" :health-evaluation="healthEvaluationMap[device.id]" :selected="selectedId===device.id" @select="selectDevice" @detail="showDetail" /></section>
+    <section class="trend-panel"><header><div><i></i><h3>{{ selectedDevice.name }} · 状态趋势</h3><span>{{ selectedDevice.id }} REAL-TIME TREND</span></div><div class="current-values"><span>负载率 <b>{{ selectedDevice.load }}%</b></span><span>健康评分 <b>{{ selectedHealth.score }}</b></span><span>故障概率 <b>{{ selectedHealth.failureProbability }}%</b></span></div></header><BaseChart :option="chartOption" height="310px" /></section>
 
     <el-dialog v-model="detailVisible" width="660px" title="设备运行详情">
       <template v-if="detailDevice">
@@ -81,4 +88,5 @@ onBeforeUnmount(() => window.clearInterval(timer))
 
 <style scoped>
 .equipment-page{color:#dcecf7}.page-header{display:flex;align-items:center;justify-content:space-between;padding:4px 2px 15px}.page-header p{margin:0 0 4px;color:#3d9ccb;font:10px Consolas;letter-spacing:2px}.page-header h2{margin:0;color:#edf8ff;font-size:21px}.online{color:#6e91aa;font-size:11px}.online i{display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#2bd398;box-shadow:0 0 8px #2bd398}.online b{margin-left:8px;color:#39cda0;font:14px Consolas}.overview{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}.overview>div{position:relative;min-height:82px;padding:15px 18px;overflow:hidden;background:linear-gradient(135deg,#0d3554,#092640);border:1px solid #214d6b}.overview span{display:block;color:#7293aa;font-size:10px}.overview strong{display:block;margin-top:7px;color:#dcecf7;font:600 25px Consolas}.overview small{margin-left:4px;color:#6d8da4;font:10px "Microsoft YaHei"}.overview .el-icon{position:absolute;right:18px;top:25px;color:#245f82;font-size:30px}.green{color:#2bd398!important}.orange{color:#ffad45!important}.cyan{color:#31c9df!important}.toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding:8px 10px;background:#092840;border:1px solid #1e4865}.filter{display:flex;flex-wrap:wrap;gap:5px}.filter button{padding:6px 13px;color:#7899b0;cursor:pointer;background:transparent;border:1px solid transparent;font-size:11px}.filter button:hover,.filter button.active{color:#d9effb;background:#17496a;border-color:#286b92}.toolbar>span{color:#587a92;font-size:9px}.device-grid{display:grid;grid-template-columns:repeat(5,minmax(200px,1fr));gap:12px;margin-bottom:12px}.trend-panel{padding:15px 16px 4px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.trend-panel>header{height:34px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid rgba(55,107,142,.35)}.trend-panel header>div:first-child{display:flex;align-items:center;gap:9px}.trend-panel header i{width:3px;height:15px;background:#2bb7ec;box-shadow:0 0 8px #2bb7ec}.trend-panel h3{margin:0;color:#dceefa;font-size:14px}.trend-panel header span{color:#49748e;font:9px Consolas}.current-values{display:flex;gap:20px}.current-values span{color:#688ba3!important;font:10px "Microsoft YaHei"!important}.current-values b{margin-left:5px;color:#35c7e2;font:13px Consolas}.detail-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;padding:15px 20px;background:#f2f7fa}.detail-head small{color:#2985b9;font:11px Consolas}.detail-head h3{margin:4px 0;color:#263e52;font-size:18px}.detail-head p{margin:0;color:#8797a3;font-size:11px}.detail-head :deep(.el-progress__text){display:flex;flex-direction:column}.detail-head :deep(.el-progress__text b){font:600 21px Consolas}.detail-head :deep(.el-progress__text small){font-size:9px;color:#8496a3}.detail-alert{margin-top:15px}@media(max-width:1400px){.device-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:900px){.overview,.device-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:600px){.overview,.device-grid{grid-template-columns:1fr}.toolbar,.page-header{align-items:flex-start;flex-direction:column;gap:10px}}
+.overview{grid-template-columns:repeat(5,1fr)}.red{color:#ef6262!important}@media(max-width:1200px){.overview{grid-template-columns:repeat(3,1fr)}}
 </style>

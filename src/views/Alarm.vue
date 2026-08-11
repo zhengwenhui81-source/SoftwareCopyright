@@ -1,19 +1,25 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import BaseChart from '@/components/charts/BaseChart.vue'
 import { alarmLevels, alarmRecords, alarmStatuses, alarmTrend } from '@/mock/alarm'
+import { getLinkedAlarms, subscribeLinkedAlarms, updateLinkedAlarm } from '@/industrialAlarmLink'
 
-const alarms = ref(alarmRecords.map(item => ({ ...item })))
+const linkedAlarms = getLinkedAlarms()
+const alarms = ref([...linkedAlarms, ...alarmRecords.filter((item) => !linkedAlarms.some((linked) => linked.id === item.id))].map(item => ({ ...item })))
 const level = ref(''); const status = ref(''); const keyword = ref('')
 const detailVisible = ref(false); const selected = ref(null); const assignOwner = ref('')
 const filtered = computed(() => alarms.value.filter(item => (!level.value || item.level === level.value) && (!status.value || item.status === status.value) && (!keyword.value || `${item.id}${item.device}${item.reason}`.toLowerCase().includes(keyword.value.toLowerCase()))))
 const stats = computed(() => ({ total: alarms.value.length, critical: alarms.value.filter(i=>i.level==='critical'&&i.status!=='closed').length, pending: alarms.value.filter(i=>i.status==='pending').length, processing: alarms.value.filter(i=>i.status==='processing').length }))
 const trendOption = computed(() => ({ color:['#ef5b5b','#f1aa45','#359fe8'],tooltip:{trigger:'axis'},legend:{right:8,top:0,textStyle:{color:'#7897ad'}},grid:{left:40,right:16,top:38,bottom:24},xAxis:{type:'category',data:alarmTrend.times,axisLine:{lineStyle:{color:'#31516a'}},axisLabel:{color:'#7897ad'}},yAxis:{type:'value',minInterval:1,axisLabel:{color:'#7897ad'},splitLine:{lineStyle:{color:'rgba(100,145,177,.13)',type:'dashed'}}},series:[{name:'严重',type:'bar',stack:'alarm',data:alarmTrend.critical},{name:'警告',type:'bar',stack:'alarm',data:alarmTrend.warning},{name:'提示',type:'bar',stack:'alarm',data:alarmTrend.info}] }))
 function openDetail(row){selected.value=row;assignOwner.value=row.owner==='未指派'?'':row.owner;detailVisible.value=true}
-function acknowledge(){selected.value.status='processing';selected.value.owner=assignOwner.value||'当前用户';ElMessage.success('报警已确认并进入处理流程')}
-function resolve(){selected.value.status='resolved';ElMessage.success('报警已标记为处理完成');detailVisible.value=false}
-function closeAlarm(row){row.status='closed';ElMessage.success(`${row.id} 已关闭`)}
+function acknowledge(){selected.value.status='processing';selected.value.owner=assignOwner.value||'当前用户';updateLinkedAlarm(selected.value);ElMessage.success('报警已确认并进入处理流程')}
+function resolve(){selected.value.status='resolved';updateLinkedAlarm(selected.value);ElMessage.success('报警已标记为处理完成');detailVisible.value=false}
+function closeAlarm(row){row.status='closed';updateLinkedAlarm(row);ElMessage.success(`${row.id} 已关闭`)}
+const unsubscribe = subscribeLinkedAlarms((alarm) => {
+  if (!alarms.value.some((item) => item.id === alarm.id)) alarms.value.unshift({ ...alarm })
+})
+onBeforeUnmount(unsubscribe)
 </script>
 <template>
  <div class="alarm-page">

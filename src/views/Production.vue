@@ -3,13 +3,13 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ProcessNode from '@/components/production/ProcessNode.vue'
 import { initialProductionProcesses, productionSummary, statusMeta, fluctuateProcessValue } from '@/mock/production'
-import { createManualProcessAlarm, evaluateProcessAlarms } from '@/industrialAlarmLink'
+import { createManualProcessAlarm, evaluateProcessAlarms, getLinkedAlarms } from '@/industrialAlarmLink'
 
 const processes = ref(initialProductionProcesses.map((item) => ({ ...item, parameters: item.parameters.map((p) => ({ ...p })) })))
 const selectedProcess = ref(null)
 const detailVisible = ref(false)
 const simulationPaused = ref(false)
-const abnormalCount = computed(() => processes.value.filter((item) => item.status === 'abnormal').length)
+const abnormalCount = computed(() => processes.value.filter((item) => item.status === 'abnormal' || item.alarmDetail).length)
 const currentProcess = computed(() => processes.value.find((item) => item.status === 'running' || item.status === 'abnormal'))
 const overallProgress = computed(() => Math.round(processes.value.reduce((sum, item) => sum + item.progress, 0) / processes.value.length))
 
@@ -23,12 +23,26 @@ function toggleSimulation() {
   ElMessage.info(simulationPaused.value ? '生产数据模拟已暂停' : '生产数据模拟已恢复')
 }
 
+function syncProcessAlarmStates() {
+  const activeAlarms = getLinkedAlarms().filter((alarm) => alarm.batchNo === productionSummary.batchNo && !['resolved', 'closed'].includes(alarm.status))
+  processes.value.forEach((process) => {
+    const alarm = activeAlarms.find((item) => item.processId === process.id || item.eventKey?.split(':')[1] === process.id)
+    process.alarmDetail = alarm ? {
+      id: alarm.id,
+      parameter: alarm.triggerParameter || '工艺参数',
+      value: alarm.value || '模拟异常值',
+      threshold: alarm.threshold || '模拟阈值',
+    } : null
+  })
+}
+
 function reportException() {
   ElMessageBox.confirm('确认将当前工序标记为异常并生成报警记录？', '异常上报', { type: 'warning' }).then(() => {
     const process = processes.value.find((item) => item.id === selectedProcess.value?.id)
     if (process) {
       process.status = 'abnormal'
       createManualProcessAlarm(process, productionSummary.batchNo)
+      syncProcessAlarmStates()
     }
     ElMessage.success('异常已上报至报警中心')
   }).catch(() => {})
@@ -41,6 +55,7 @@ function updateProduction() {
   running.progress = Math.min(100, running.progress + Math.floor(Math.random() * 4 + 2))
   running.parameters = running.parameters.map((parameter, index) => ({ ...parameter, value: fluctuateProcessValue(parameter.value, index === 0 ? 1.2 : .12, typeof parameter.value === 'number' && !Number.isInteger(parameter.value) ? 2 : 0) }))
   const linkedAlarms = evaluateProcessAlarms(processes.value, productionSummary.batchNo)
+  syncProcessAlarmStates()
   if (linkedAlarms.length) ElMessage.warning(`检测到${linkedAlarms[0].reason}，已自动生成报警`)
   if (running.progress >= 100) {
     running.status = 'completed'
@@ -57,6 +72,7 @@ function updateProduction() {
 
 const timer = window.setInterval(updateProduction, 3000)
 evaluateProcessAlarms(processes.value, productionSummary.batchNo)
+syncProcessAlarmStates()
 onBeforeUnmount(() => window.clearInterval(timer))
 </script>
 

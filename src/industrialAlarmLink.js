@@ -2,6 +2,7 @@ import { processParameterRuleList } from './processParameterRules.js'
 
 const STORAGE_KEY = 'plate-monitor-linked-alarms'
 const EVENT_NAME = 'plate-monitor:alarm-created'
+export const LINKED_ALARM_CHANGED = 'plate-monitor:alarm-changed'
 
 const thresholdRules = processParameterRuleList.filter((rule) => rule.alarmLevel)
 
@@ -119,6 +120,14 @@ export function getLinkedAlarms() {
   return readStoredAlarms()
 }
 
+/** 只读查询指定工序仍会影响生产卡片的旧报警，便于多报警场景核验。 */
+export function getActiveLinkedAlarmsForProcess(processId, batchNo = '') {
+  return readStoredAlarms().filter((alarm) => {
+    const processMatched = alarm.processId === processId || alarm.eventKey?.split(':')[1] === processId
+    return processMatched && (!batchNo || alarm.batchNo === batchNo) && alarm.status !== 'closed'
+  })
+}
+
 export function subscribeLinkedAlarms(listener) {
   const handler = (event) => listener(event.detail)
   window.addEventListener(EVENT_NAME, handler)
@@ -126,10 +135,13 @@ export function subscribeLinkedAlarms(listener) {
 }
 
 export function updateLinkedAlarm(alarm) {
-  if (!alarm?.source?.startsWith('production-')) return
+  if (!alarm?.id || !alarm?.source?.startsWith('production-')) return { updated: false, reason: 'invalid_alarm', alarm: null }
   const records = readStoredAlarms()
   const index = records.findIndex((item) => item.id === alarm.id)
-  if (index === -1) return
+  if (index === -1) return { updated: false, reason: 'not_found', alarm: null }
   records[index] = { ...records[index], ...alarm }
   saveStoredAlarms(records)
+  const updated = records[index]
+  window.dispatchEvent(new CustomEvent(LINKED_ALARM_CHANGED, { detail: updated }))
+  return { updated: true, reason: 'updated', alarm: updated }
 }

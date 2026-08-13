@@ -7,7 +7,7 @@ import ProcessTrendChart from '@/components/production/ProcessTrendChart.vue'
 import ProductionPlanCard from '@/components/production/ProductionPlanCard.vue'
 import ProductionEventTable from '@/components/production/ProductionEventTable.vue'
 import { initialProductionProcesses, productionSummary, statusMeta, fluctuateProcessValue } from '@/mock/production'
-import { createManualProcessAlarm, evaluateProcessAlarms, getLinkedAlarms } from '@/industrialAlarmLink'
+import { createManualProcessAlarm, evaluateProcessAlarms, getLinkedAlarms, LINKED_ALARM_CHANGED } from '@/industrialAlarmLink'
 import { getProductionBatch, getProductionPlans, getProductionRuntime, updateBatchProgress, updateProductionRuntime } from '@/productionPlan'
 import { analyzeParameterStatus, appendRuntimeParameterSample, getProcessParameters } from '@/processParameter'
 import { PROCESS_PARAMETER_CHANGED, processParameterRules } from '@/processParameter'
@@ -43,8 +43,12 @@ const blockedMessage = computed(() => blockedProcess.value
   ? `工序异常阻断：${blockedProcess.value.name}${blockedProcess.value.alarmDetail?.parameter || '工艺参数'}超出仿真范围，自动推进已暂停，请完成参数调整。`
   : '')
 const overallProgress = computed(() => Math.round(processes.value.reduce((sum, item) => sum + item.progress, 0) / processes.value.length))
+const analysisProcessOptions = computed(() => processes.value.filter((item) => Object.keys(processParameterRules[item.name] || {}).length))
+const selectedAnalysisProcessId = ref('')
+const analysisProcessManuallySelected = ref(false)
+const selectedAnalysisProcess = computed(() => analysisProcessOptions.value.find((item) => item.id === selectedAnalysisProcessId.value) || null)
 const parameterRevision = ref(0)
-const parameterRecord = computed(() => { parameterRevision.value; return getProcessParameters(batch.value?.batchId, currentProcess.value?.name) })
+const parameterRecord = computed(() => { parameterRevision.value; return getProcessParameters(batch.value?.batchId, selectedAnalysisProcess.value?.name) })
 const parameterStatuses = computed(() => analyzeParameterStatus(parameterRecord.value))
 const parameterStatusMeta = {
   normal: { label: '正常', type: 'success' },
@@ -53,7 +57,24 @@ const parameterStatusMeta = {
 }
 const productionEvents = ref([])
 const adjustmentVisible = ref(false)
-const adjustmentForm = ref({ parameterKey: '', parameterName: '', currentValue: 0, targetValue: 0, unit: '', lowerLimit: 0, upperLimit: 0, operator: '张工', reason: '' })
+const adjustmentForm = ref({ processId: '', processName: '', parameterKey: '', parameterName: '', currentValue: 0, targetValue: 0, unit: '', lowerLimit: 0, upperLimit: 0, operator: '张工', reason: '' })
+
+function ensureAnalysisProcessSelection() {
+  const options = analysisProcessOptions.value
+  if (!options.length) return (selectedAnalysisProcessId.value = '')
+  const selectionStillAvailable = options.some((item) => item.id === selectedAnalysisProcessId.value)
+  if (selectionStillAvailable && analysisProcessManuallySelected.value) return
+  if (selectionStillAvailable) return
+  const preferred = options.find((item) => item.runtimeAlarmState === 'current_abnormal')
+    || options.find((item) => item.runtimeAlarmState === 'recovery_pending')
+    || options.find((item) => item.baseStatus === 'running')
+    || options.at(-1)
+  selectedAnalysisProcessId.value = preferred.id
+}
+
+function handleAnalysisProcessChange() {
+  analysisProcessManuallySelected.value = true
+}
 
 function refreshProductionEvents() {
   productionEvents.value = getProductionEvents().filter((item) => item.batchId === batch.value?.batchId)
@@ -183,11 +204,14 @@ function reportException() {
 }
 
 function openAdjustment(item) {
+  const process = selectedAnalysisProcess.value
+  if (!process) return ElMessage.warning('请选择需要分析的工序')
   adjustmentForm.value = {
+    processId: process.id, processName: process.name,
     parameterKey: item.key, parameterName: item.name, currentValue: item.value,
     targetValue: Number(((item.min + item.max) / 2).toFixed(Math.abs(item.max) < 100 ? 2 : 0)),
     unit: item.unit, lowerLimit: item.min, upperLimit: item.max, operator: '张工',
-    reason: `${currentProcess.value?.name}${item.name}${item.status}，执行模拟工艺参数调整`,
+    reason: `${process.name}${item.name}${item.status}，执行模拟工艺参数调整`,
   }
   adjustmentVisible.value = true
 }
@@ -198,7 +222,7 @@ function executeAdjustment() {
   if (!Number.isFinite(target) || target < form.lowerLimit || target > form.upperLimit) return ElMessage.warning('目标参数仍超出工艺标准范围')
   if (!form.operator.trim() || !form.reason.trim()) return ElMessage.warning('请填写执行人员和调整原因')
   const created = createProductionAdjustment({
-    batchId: batch.value.batchId, process: currentProcess.value.name, processId: currentProcess.value.id,
+    batchId: batch.value.batchId, process: form.processName, processId: form.processId,
     parameterKey: form.parameterKey, parameterName: form.parameterName, targetValue: target,
     operator: form.operator.trim(), reason: form.reason.trim(),
   })
@@ -248,6 +272,8 @@ function handleParameterChanged(event) {
 }
 
 window.addEventListener(PROCESS_PARAMETER_CHANGED, handleParameterChanged)
+const handleLinkedAlarmChanged = () => syncProcessAlarmStates()
+window.addEventListener(LINKED_ALARM_CHANGED, handleLinkedAlarmChanged)
 
 function updateProduction() {
   if (simulationPaused.value) return
@@ -300,10 +326,12 @@ function updateProduction() {
 const timer = window.setInterval(updateProduction, 3000)
 if (currentProcess.value) evaluateProcessAlarms([currentProcess.value], productionSummary.batchNo)
 syncProcessAlarmStates()
+ensureAnalysisProcessSelection()
 onBeforeUnmount(() => {
   persistRuntime(true)
   window.clearInterval(timer)
   window.removeEventListener(PROCESS_PARAMETER_CHANGED, handleParameterChanged)
+  window.removeEventListener(LINKED_ALARM_CHANGED, handleLinkedAlarmChanged)
 })
 </script>
 
@@ -332,7 +360,8 @@ onBeforeUnmount(() => {
     </section>
 
     <section class="parameter-panel">
-      <header><div><i></i><h3>工艺参数监控</h3><span>PROCESS PARAMETER ANALYSIS</span></div><div class="parameter-process">当前生产工序 <b>{{ currentProcess?.name || '全部完成' }}</b><small>{{ batch?.batchId }}</small></div></header>
+      <header><div><i></i><h3>工艺参数监控</h3><span>PROCESS PARAMETER ANALYSIS</span></div><div class="parameter-process"><span>分析工序</span><el-select v-model="selectedAnalysisProcessId" size="small" @change="handleAnalysisProcessChange"><el-option v-for="item in analysisProcessOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select><small>{{ batch?.batchId }}</small></div></header>
+      <el-alert v-if="selectedAnalysisProcess?.runtimeAlarmState === 'recovery_pending'" :title="`${selectedAnalysisProcess.name}当前参数已恢复正常，仍有报警等待恢复确认`" type="warning" :closable="false" show-icon />
       <template v-if="parameterRecord && parameterStatuses.length">
         <div class="parameter-analysis">
           <div class="parameter-cards">
@@ -345,7 +374,7 @@ onBeforeUnmount(() => {
           <ProcessTrendChart :batch-id="parameterRecord.batchId" :process="parameterRecord.process" :parameters="parameterStatuses" />
         </div>
       </template>
-      <el-empty v-else description="当前工序暂无参数分析规则" :image-size="65" />
+      <el-empty v-else description="所选工序暂无参数分析数据" :image-size="65" />
       <footer>工艺参数分析仅用于生产监控演示，不直接生成报警。</footer>
     </section>
 
@@ -353,7 +382,7 @@ onBeforeUnmount(() => {
 
     <el-dialog v-model="adjustmentVisible" width="560px" title="生产工艺参数调整">
       <el-alert title="工艺调整演示 · 基于工业仿真数据" type="info" :closable="false" show-icon />
-      <el-descriptions :column="2" border class="adjustment-summary"><el-descriptions-item label="生产批次">{{ batch?.batchId }}</el-descriptions-item><el-descriptions-item label="工序">{{ currentProcess?.name }}</el-descriptions-item><el-descriptions-item label="参数">{{ adjustmentForm.parameterName }}</el-descriptions-item><el-descriptions-item label="当前值">{{ adjustmentForm.currentValue }} {{ adjustmentForm.unit }}</el-descriptions-item><el-descriptions-item label="标准范围" :span="2">{{ adjustmentForm.lowerLimit }}–{{ adjustmentForm.upperLimit }} {{ adjustmentForm.unit }}</el-descriptions-item></el-descriptions>
+      <el-descriptions :column="2" border class="adjustment-summary"><el-descriptions-item label="生产批次">{{ batch?.batchId }}</el-descriptions-item><el-descriptions-item label="工序">{{ adjustmentForm.processName }}</el-descriptions-item><el-descriptions-item label="参数">{{ adjustmentForm.parameterName }}</el-descriptions-item><el-descriptions-item label="当前值">{{ adjustmentForm.currentValue }} {{ adjustmentForm.unit }}</el-descriptions-item><el-descriptions-item label="标准范围" :span="2">{{ adjustmentForm.lowerLimit }}–{{ adjustmentForm.upperLimit }} {{ adjustmentForm.unit }}</el-descriptions-item></el-descriptions>
       <el-form label-position="top"><el-form-item label="目标值"><el-input-number v-model="adjustmentForm.targetValue" :precision="Math.abs(adjustmentForm.upperLimit) < 100 ? 2 : 0" :step="Math.abs(adjustmentForm.upperLimit) < 100 ? 0.1 : 100" style="width:100%" /></el-form-item><el-form-item label="执行人员"><el-input v-model="adjustmentForm.operator" /></el-form-item><el-form-item label="调整原因"><el-input v-model="adjustmentForm.reason" type="textarea" :rows="3" /></el-form-item></el-form>
       <template #footer><el-button @click="adjustmentVisible=false">取消</el-button><el-button type="primary" @click="executeAdjustment">执行参数调整</el-button></template>
     </el-dialog>
@@ -373,4 +402,5 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .production-page{color:#d9eaf6}.production-plan,.batch-progress{margin-bottom:12px}.page-header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:4px 2px 15px}.page-header p{margin:0 0 4px;color:#3b9acb;font:10px Consolas;letter-spacing:2px}.page-header h2{margin:0;color:#edf8ff;font-size:21px}.header-actions{display:flex;align-items:center;gap:15px}.header-actions>span{color:#7899b1;font-size:11px}.header-actions>span i{display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#29d394;box-shadow:0 0 8px #29d394}.status-strip{display:grid;grid-template-columns:repeat(5,1fr);margin-bottom:12px;background:#092840;border:1px solid #1e4865}.status-strip>div{display:flex;align-items:center;justify-content:center;gap:14px;min-height:58px;border-right:1px solid #1e4865}.status-strip>div:last-child{border:0}.status-strip span{color:#698aa2;font-size:11px}.status-strip strong{color:#dbeaf3;font:600 17px Consolas,"Microsoft YaHei"}.status-strip small{font-size:10px;color:#6d91a9}.success{color:#2dd298!important}.danger{color:#ff6262!important}.flow-panel{padding:16px 18px 22px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.flow-panel>header{display:flex;align-items:center;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid rgba(55,107,142,.35)}.flow-panel>header>div{display:flex;align-items:center;gap:9px}.flow-panel>header>div>i{width:3px;height:16px;background:#2cb9ed;box-shadow:0 0 8px #2cb9ed}.flow-panel h3{margin:0;color:#dceefa;font-size:14px}.flow-panel header>div>span{color:#3f6d89;font:9px Consolas;letter-spacing:1px}.legend span{display:flex;align-items:center;gap:5px!important;color:#6f91aa!important;font:10px "Microsoft YaHei"!important;letter-spacing:0!important}.legend i{width:7px!important;height:7px!important;border-radius:50%;box-shadow:none!important}.done{background:#29c88d!important}.active{background:#2cbee9!important}.wait{background:#607b8e!important}.error{background:#ec5959!important}.process-grid{display:grid;grid-template-columns:repeat(8,minmax(140px,1fr));gap:18px;padding-top:22px}.parameter-panel{margin-top:12px;padding:0 16px 10px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.parameter-panel>header{display:flex;align-items:center;justify-content:space-between;height:47px;border-bottom:1px solid rgba(55,107,142,.35)}.parameter-panel>header>div:first-child{display:flex;align-items:center;gap:8px}.parameter-panel header i{width:3px;height:16px;background:#2cb9ed}.parameter-panel h3{margin:0;font-size:14px}.parameter-panel header span{color:#49748e;font:9px Consolas}.parameter-process{color:#6d8fa5;font-size:10px}.parameter-process b{margin:0 8px;color:#4cc4ef;font-size:13px}.parameter-process small{color:#4d7289;font:9px Consolas}.parameter-analysis{display:grid;grid-template-columns:360px 1fr;gap:12px;padding-top:12px}.parameter-cards{display:grid;gap:10px}.parameter-cards article{padding:13px 15px;background:#09263e;border-left:3px solid #2bd398}.parameter-cards article.level-high{border-color:#ef6262}.parameter-cards article.level-low{border-color:#ffad45}.parameter-cards article>div{display:flex;align-items:center;justify-content:space-between}.parameter-cards span{color:#80a1b5;font-size:11px}.parameter-cards strong{display:block;margin-top:7px;color:#dcecf7;font:600 24px Consolas}.parameter-cards strong small{margin-left:4px;color:#6d91a8;font-size:10px}.parameter-cards p{margin:5px 0;color:#66899f;font-size:9px}.parameter-cards em{color:#50768d;font-size:9px;font-style:normal}.parameter-panel>footer{margin-top:8px;color:#496e84;text-align:right;font-size:8px}.dialog-title{display:flex;align-items:center;gap:12px}.dialog-title>div{flex:1}.dialog-title small{color:#5999bf;font:9px Consolas;letter-spacing:2px}.dialog-title h3{margin:3px 0 0;color:#243a50;font-size:18px}.dialog-icon{width:38px;height:38px;display:grid;place-items:center;color:#fff;background:#238ed0;border-radius:4px;font-size:20px}.section-title{margin:20px 0 10px;padding-left:9px;color:#314b61;font-size:13px;border-left:3px solid #2699d6}.parameter-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.parameter-grid>div{display:flex;flex-direction:column;padding:13px;background:#f2f7fa;border:1px solid #dce8ef}.parameter-grid span{color:#6e8291;font-size:11px}.parameter-grid strong{margin:5px 0;color:#166fa5;font:600 22px Consolas}.parameter-grid small{margin-left:4px;font:11px "Microsoft YaHei"}.parameter-grid em{color:#99a7b1;font-size:9px;font-style:normal}.description{margin:0;padding:12px;color:#5c7182;font-size:12px;line-height:1.7;background:#f6f8fa}.process-dialog :deep(.el-dialog__body){padding-top:10px}@media(max-width:1500px){.process-grid{grid-template-columns:repeat(4,1fr)}}@media(max-width:900px){.process-grid{grid-template-columns:repeat(2,1fr)}.status-strip{grid-template-columns:repeat(2,1fr)}.parameter-analysis{grid-template-columns:1fr}.page-header,.flow-panel>header{align-items:flex-start;flex-direction:column}}
+.parameter-process{display:flex;align-items:center}.parameter-process .el-select{width:120px;margin:0 8px}
 </style>

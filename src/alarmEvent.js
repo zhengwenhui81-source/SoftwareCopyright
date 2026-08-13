@@ -498,7 +498,14 @@ export function returnAlarmToProcessing(alarmId, operator, result = '恢复验�
 export function closeAlarmEvent(alarmId, operator, result = '恢复验证通过，报警关闭') {
   const event = readEvents().find((item) => item.id === alarmId)
   if (!event) return { updated: false, reason: 'not_found', event: null }
-  if (event.status === 'closed') return { updated: true, reason: 'already_closed', event: clone(event) }
+  if (event.status === 'closed') {
+    if (event.sourceType !== 'production_alarm') return { updated: true, reason: 'already_closed', event: clone(event), legacyUpdated: null }
+    const legacy = getLinkedAlarms().find((item) => item.id === event.sourceEventId)
+    if (!legacy) return { updated: true, reason: 'legacy_alarm_not_found', event: clone(event), legacyUpdated: false }
+    if (legacy.status === 'closed') return { updated: true, reason: 'already_closed', event: clone(event), legacyUpdated: false, legacyAlarm: clone(legacy) }
+    const linkedResult = updateLinkedAlarm({ ...legacy, status: 'closed' })
+    return { updated: true, reason: 'legacy_alarm_reconciled', event: clone(event), legacyUpdated: Boolean(linkedResult?.updated), legacyAlarm: linkedResult?.alarm || null }
+  }
   if (!validateAlarmTransition(event.status, 'closed')) {
     return { updated: false, reason: 'invalid_transition', event: clone(event) }
   }
@@ -517,9 +524,11 @@ export function closeAlarmEvent(alarmId, operator, result = '恢复验证通过�
   const closed = transitionAlarm(alarmId, 'closed', 'close', operator, result)
   if (closed.updated && event.sourceType === 'production_alarm') {
     const legacy = getLinkedAlarms().find((item) => item.id === event.sourceEventId)
-    if (legacy) updateLinkedAlarm({ ...legacy, status: 'closed' })
+    if (!legacy) return { ...closed, reason: 'legacy_alarm_not_found', legacyUpdated: false }
+    const linkedResult = updateLinkedAlarm({ ...legacy, status: 'closed' })
+    return { ...closed, legacyUpdated: Boolean(linkedResult?.updated), legacyAlarm: linkedResult?.alarm || null }
   }
-  return closed
+  return { ...closed, legacyUpdated: null }
 }
 
 /** 将生产参数调整结果写入对应 production_event 报警并推进恢复验证。 */

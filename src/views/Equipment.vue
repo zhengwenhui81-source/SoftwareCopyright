@@ -5,8 +5,9 @@ import BaseChart from '@/components/charts/BaseChart.vue'
 import EquipmentCard from '@/components/equipment/EquipmentCard.vue'
 import { createTrendData, equipmentList, statusMap, trendTimes, vary } from '@/mock/equipment'
 import { evaluateEquipmentList } from '@/equipmentHealth'
+import { applyEquipmentRecovery, EQUIPMENT_RECOVERY_CHANGED } from '@/equipmentRecovery'
 
-const devices = ref(equipmentList.map((item) => ({ ...item })))
+const devices = ref(equipmentList.map((item) => applyEquipmentRecovery(item)))
 const filterType = ref('全部设备')
 const selectedId = ref(devices.value[0].id)
 const detailVisible = ref(false)
@@ -57,7 +58,16 @@ function updateDevices() {
   })
 }
 const timer = window.setInterval(updateDevices, 3000)
-onBeforeUnmount(() => window.clearInterval(timer))
+function refreshRecoveredDevices() {
+  devices.value = equipmentList.map((item) => applyEquipmentRecovery(item))
+  trends.value = Object.fromEntries(devices.value.map((device) => [device.id, createTrendData(device)]))
+  if (detailDevice.value) detailDevice.value = devices.value.find((item) => item.id === detailDevice.value.id) || null
+}
+window.addEventListener(EQUIPMENT_RECOVERY_CHANGED, refreshRecoveredDevices)
+onBeforeUnmount(() => {
+  window.clearInterval(timer)
+  window.removeEventListener(EQUIPMENT_RECOVERY_CHANGED, refreshRecoveredDevices)
+})
 </script>
 
 <template>
@@ -76,7 +86,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
 
     <el-dialog v-model="detailVisible" width="660px" title="设备运行详情">
       <template v-if="detailDevice">
-        <div class="detail-head"><div><small>{{ detailDevice.id }}</small><h3>{{ detailDevice.name }}</h3><p>{{ detailDevice.type }}</p></div><el-progress type="circle" :percentage="detailDevice.health" :width="92" :stroke-width="8" :color="detailDevice.health<85?'#e6a23c':'#20bfa9'"><template #default><b>{{ detailDevice.health }}</b><small>健康分</small></template></el-progress></div>
+        <div class="detail-head"><div><small>{{ detailDevice.id }}</small><h3>{{ detailDevice.name }}</h3><p>{{ detailDevice.type }}</p></div><el-progress type="circle" :percentage="healthEvaluationMap[detailDevice.id]?.score || 0" :width="92" :stroke-width="8" :color="(healthEvaluationMap[detailDevice.id]?.score || 0)<85?'#e6a23c':'#20bfa9'"><template #default><b>{{ healthEvaluationMap[detailDevice.id]?.score || 0 }}</b><small>健康分</small></template></el-progress></div>
         <el-descriptions :column="2" border><el-descriptions-item label="运行状态"><el-tag :type="statusMap[detailDevice.status].type">{{ statusMap[detailDevice.status].label }}</el-tag></el-descriptions-item><el-descriptions-item label="累计运行">{{ detailDevice.runtime.toLocaleString() }} 小时</el-descriptions-item><el-descriptions-item label="实时温度">{{ detailDevice.temperature }} ℃</el-descriptions-item><el-descriptions-item label="系统压力">{{ detailDevice.pressure }} MPa</el-descriptions-item><el-descriptions-item label="振动速度">{{ detailDevice.vibration }} mm/s</el-descriptions-item><el-descriptions-item label="当前负载">{{ detailDevice.load }}%</el-descriptions-item><el-descriptions-item label="计划维护" :span="2">{{ detailDevice.maintenance }}</el-descriptions-item></el-descriptions>
         <el-alert v-if="detailDevice.status==='warning'" title="振动指标接近预警阈值，建议检查轧辊轴承与润滑状态。" type="warning" show-icon :closable="false" class="detail-alert" />
       </template>

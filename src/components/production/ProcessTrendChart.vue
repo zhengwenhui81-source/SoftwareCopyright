@@ -1,13 +1,25 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import BaseChart from '@/components/charts/BaseChart.vue'
-import { getParameterTrend } from '@/processParameter'
+import { getParameterTrend, PROCESS_PARAMETER_CHANGED } from '@/processParameter'
 
 const props = defineProps({ batchId: { type: String, required: true }, process: { type: String, required: true }, parameters: { type: Array, required: true } })
 const selectedKey = ref(props.parameters[0]?.key || '')
-watch(() => [props.process, props.parameters], () => { selectedKey.value = props.parameters[0]?.key || '' }, { deep: true })
-const trend = computed(() => getParameterTrend(props.batchId, props.process, selectedKey.value))
+watch(
+  [() => props.process, () => props.parameters.map((item) => item.key).join('|')],
+  ([process, parameterKeys], [previousProcess] = []) => {
+    const keys = parameterKeys ? parameterKeys.split('|') : []
+    if (process !== previousProcess || !keys.includes(selectedKey.value)) selectedKey.value = keys[0] || ''
+  },
+)
+const trendRevision = ref(0)
+const trend = computed(() => { trendRevision.value; return getParameterTrend(props.batchId, props.process, selectedKey.value) })
 const selectedStatus = computed(() => props.parameters.find((item) => item.key === selectedKey.value))
+const handleParameterChanged = (event) => {
+  if (event.detail?.batchId === props.batchId && event.detail?.process === props.process) trendRevision.value += 1
+}
+window.addEventListener(PROCESS_PARAMETER_CHANGED, handleParameterChanged)
+onBeforeUnmount(() => window.removeEventListener(PROCESS_PARAMETER_CHANGED, handleParameterChanged))
 const chartOption = computed(() => {
   const data = trend.value
   const abnormal = selectedStatus.value?.level !== 'normal'

@@ -29,7 +29,7 @@ export const initialProductionProcesses = [
   {
     id: 'finishing', name: '精轧', shortName: '精轧', icon: 'Operation', status: 'running', progress: 68,
     equipment: 'FM-01 四辊精轧机', duration: '进行中 6 分钟', operator: '赵工',
-    parameters: [{ name: '厚度控制', value: 30.12, unit: 'mm', range: '29.7–30.3' }, { name: '轧制压力', value: 31280, unit: 'kN', range: '28000–33000' }],
+    parameters: [{ name: '厚度控制', value: 30.12, unit: 'mm', range: '29.7–30.3' }, { name: '轧制压力', value: 31280, unit: 'kN', range: '28000–31000' }],
     description: '采用自动厚度控制系统执行终轧，获得目标厚度和板形。',
   },
   {

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import BaseChart from '@/components/charts/BaseChart.vue'
 import EquipmentEventTable from '@/components/equipment/EquipmentEventTable.vue'
@@ -7,12 +7,13 @@ import FailurePrediction from '@/components/equipment/FailurePrediction.vue'
 import { equipmentList } from '@/mock/equipment'
 import { analyzeRiskFactors, evaluateEquipmentHealth, simulateFailureProbability } from '@/equipmentHealth'
 import { createEquipmentEvent, getEquipmentEvents, updateEquipmentEventStatus } from '@/equipmentEvent'
+import { EQUIPMENT_RECOVERY_CHANGED } from '@/equipmentRecovery'
 
 const failureCatalog = {
   vibration: '主传动轴承异常', temperature: '冷却或散热系统异常', pressure: '液压系统压力异常', load: '主传动过载风险', runtime: '关键部件寿命衰减',
 }
 
-const records = equipmentList.map((device) => {
+function createPredictionRecords() { return equipmentList.map((device) => {
   const evaluation = evaluateEquipmentHealth(device)
   const riskFactors = analyzeRiskFactors(device)
   const failureProbability = simulateFailureProbability(device, evaluation.score, riskFactors)
@@ -34,14 +35,16 @@ const records = equipmentList.map((device) => {
     suggestion: riskLevel === '高风险' ? '建议24小时内安排专项检查。' : riskLevel === '中风险' ? '建议加强巡检并复核异常参数。' : '保持例行巡检并持续观察趋势。',
     recommendedChecks: evaluation.diagnosis.recommendedChecks,
   }
-})
+}) }
 
-const selectedId = ref(records[0].id)
-const selected = computed(() => records.find((item) => item.id === selectedId.value) || records[0])
-const normalCount = computed(() => records.filter((item) => item.riskLevel === '低风险').length)
-const riskCount = computed(() => records.filter((item) => item.riskLevel !== '低风险').length)
-const highRiskCount = computed(() => records.filter((item) => item.riskLevel === '高风险').length)
-const averageProbability = computed(() => Math.round(records.reduce((sum, item) => sum + item.failureProbability, 0) / records.length))
+const records = ref(createPredictionRecords())
+
+const selectedId = ref(records.value[0].id)
+const selected = computed(() => records.value.find((item) => item.id === selectedId.value) || records.value[0])
+const normalCount = computed(() => records.value.filter((item) => item.riskLevel === '低风险').length)
+const riskCount = computed(() => records.value.filter((item) => item.riskLevel !== '低风险').length)
+const highRiskCount = computed(() => records.value.filter((item) => item.riskLevel === '高风险').length)
+const averageProbability = computed(() => Math.round(records.value.reduce((sum, item) => sum + item.failureProbability, 0) / records.value.length))
 const events = ref([])
 const trendLabels = ['-7d', '-6d', '-5d', '-4d', '-3d', '-2d', '当前']
 
@@ -92,9 +95,15 @@ function changeEventStatus(eventId, status) {
 }
 
 onMounted(() => {
-  records.forEach((record) => createEquipmentEvent(toEventInput(record)))
+  records.value.forEach((record) => createEquipmentEvent(toEventInput(record)))
   refreshEvents()
 })
+function handleRecoveryChanged() {
+  records.value = createPredictionRecords()
+  refreshEvents()
+}
+window.addEventListener(EQUIPMENT_RECOVERY_CHANGED, handleRecoveryChanged)
+onBeforeUnmount(() => window.removeEventListener(EQUIPMENT_RECOVERY_CHANGED, handleRecoveryChanged))
 </script>
 
 <template>

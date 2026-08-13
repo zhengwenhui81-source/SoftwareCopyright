@@ -1,13 +1,9 @@
+import { processParameterRuleList } from './processParameterRules.js'
+
 const STORAGE_KEY = 'plate-monitor-linked-alarms'
 const EVENT_NAME = 'plate-monitor:alarm-created'
 
-const thresholdRules = [
-  { processId: 'heating', parameter: '加热温度', min: 1180, max: 1230, level: 'critical', reason: '板坯加热温度超出工艺阈值', suggestion: '检查炉温控制回路、燃气流量和板坯在炉时间。' },
-  { processId: 'roughing', parameter: '轧制力', min: 26000, max: 30000, level: 'warning', reason: '粗轧轧制力超出工艺阈值', suggestion: '核验板坯温度、道次压下量及粗轧机传动状态。' },
-  { processId: 'finishing', parameter: '轧制压力', min: 28000, max: 31000, level: 'warning', reason: '精轧轧制压力超过模拟预警阈值', suggestion: '降低轧制速度，检查板坯温度和液压压下系统。' },
-  { processId: 'cooling', parameter: '冷却速度', min: 12, max: 18, level: 'warning', reason: '控冷速度超出工艺阈值', suggestion: '检查层流冷却水压、喷嘴状态及冷却模型参数。' },
-  { processId: 'cooling', parameter: '终冷温度', min: 620, max: 680, level: 'warning', reason: '控冷终冷温度超出工艺阈值', suggestion: '调整冷却水量和辊道速度，核验测温装置。' },
-]
+const thresholdRules = processParameterRuleList.filter((rule) => rule.alarmLevel)
 
 function readStoredAlarms() {
   try {
@@ -56,26 +52,29 @@ export function evaluateProcessAlarms(processes, batchNo) {
 
   thresholdRules.forEach((rule) => {
     const process = processes.find((item) => item.id === rule.processId)
-    const parameter = process?.parameters.find((item) => item.name === rule.parameter)
+    const parameter = process?.parameters.find((item) => item.key === rule.parameterKey || rule.aliases.includes(item.name))
     if (!process || !parameter || !isOutsideThreshold(parameter.value, rule)) return
 
-    const eventKey = `${batchNo}:${rule.processId}:${rule.parameter}`
-    const duplicated = stored.some((alarm) => alarm.eventKey === eventKey && !['resolved', 'closed'].includes(alarm.status))
+    const baseEventKey = `${batchNo}:${rule.processId}:${rule.parameterKey}`
+    const legacyKeys = rule.aliases.map((name) => `${batchNo}:${rule.processId}:${name}`)
+    const duplicated = stored.some((alarm) => [baseEventKey, ...legacyKeys].includes(alarm.baseEventKey || alarm.eventKey) && !['resolved', 'closed'].includes(alarm.status))
     if (duplicated) return
 
     const alarm = {
       id: createAlarmId(),
-      eventKey,
+      eventKey: `${baseEventKey}:${Date.now()}:${created.length + 1}`,
+      baseEventKey,
       source: 'production-auto',
       sourceLabel: '生产监控 · 自动阈值检测',
       batchNo,
       processId: process.id,
       device: process.equipment,
       triggerProcess: process.name,
-      triggerParameter: parameter.name,
-      level: rule.level,
+      parameterKey: rule.parameterKey,
+      triggerParameter: rule.parameterName,
+      level: rule.alarmLevel,
       time: formatTime(),
-      reason: rule.reason,
+      reason: `${rule.processName}${rule.parameterName}超出模拟工艺阈值`,
       value: `${parameter.value} ${parameter.unit}`.trim(),
       threshold: `${thresholdText(rule)} ${parameter.unit}`.trim(),
       status: 'pending',

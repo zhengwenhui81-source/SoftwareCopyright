@@ -1,15 +1,20 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import HealthDiagnosis from '@/components/equipment/HealthDiagnosis.vue'
 import { equipmentList, statusMap } from '@/mock/equipment'
 import { evaluateEquipmentList } from '@/equipmentHealth'
+import { EQUIPMENT_RECOVERY_CHANGED } from '@/equipmentRecovery'
 
 const devices = equipmentList.map((item) => ({ ...item }))
 const selectedId = ref(devices[0].id)
-const evaluations = computed(() => evaluateEquipmentList(devices))
+const recoveryRevision = ref(0)
+const evaluations = computed(() => { recoveryRevision.value; return evaluateEquipmentList(devices) })
 const evaluationMap = computed(() => Object.fromEntries(evaluations.value.map((item) => [item.equipmentId, item])))
 const selectedDevice = computed(() => devices.find((item) => item.id === selectedId.value) || devices[0])
 const selectedEvaluation = computed(() => evaluationMap.value[selectedDevice.value.id])
+const handleRecoveryChanged = () => { recoveryRevision.value += 1 }
+window.addEventListener(EQUIPMENT_RECOVERY_CHANGED, handleRecoveryChanged)
+onBeforeUnmount(() => window.removeEventListener(EQUIPMENT_RECOVERY_CHANGED, handleRecoveryChanged))
 </script>
 
 <template>

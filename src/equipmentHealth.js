@@ -1,3 +1,5 @@
+import { applyEquipmentRecovery } from './equipmentRecovery.js'
+
 /**
  * 设备健康评价模块
  *
@@ -72,8 +74,9 @@ function calculatePenalty(value, rule) {
 /** 根据温度、压力、振动、负载和运行时间计算 0–100 健康分。 */
 export function calculateHealthScore(device) {
   if (!device || typeof device !== 'object') return 0
-  const profile = getProfile(device.id)
-  const penalty = Object.entries(profile).reduce((sum, [key, rule]) => sum + calculatePenalty(Number(device[key]), rule), 0)
+  const effectiveDevice = applyEquipmentRecovery(device)
+  const profile = getProfile(effectiveDevice.id)
+  const penalty = Object.entries(profile).reduce((sum, [key, rule]) => sum + calculatePenalty(Number(effectiveDevice[key]), rule), 0)
   return Math.round(clamp(100 - penalty, 0, 100))
 }
 
@@ -86,10 +89,11 @@ export function getHealthLevel(score) {
 /** 返回所有超过预警阈值的可解释风险因素。 */
 export function analyzeRiskFactors(device) {
   if (!device || typeof device !== 'object') return []
-  const profile = getProfile(device.id)
+  const effectiveDevice = applyEquipmentRecovery(device)
+  const profile = getProfile(effectiveDevice.id)
 
   return Object.entries(profile).flatMap(([key, rule]) => {
-    const value = Number(device[key])
+    const value = Number(effectiveDevice[key])
     if (!Number.isFinite(value) || value <= rule.warning) return []
     const severity = value >= rule.critical ? 'high' : 'medium'
     return [{
@@ -176,20 +180,23 @@ export function generateHealthDiagnosis(device, evaluation) {
 
 /** 一次返回设备健康评价所需的完整结果。 */
 export function evaluateEquipmentHealth(device) {
-  const score = calculateHealthScore(device)
+  const effectiveDevice = applyEquipmentRecovery(device)
+  const score = calculateHealthScore(effectiveDevice)
   const level = getHealthLevel(score)
-  const riskFactors = analyzeRiskFactors(device)
-  const failureProbability = simulateFailureProbability(device, score, riskFactors)
+  const riskFactors = analyzeRiskFactors(effectiveDevice)
+  const failureProbability = simulateFailureProbability(effectiveDevice, score, riskFactors)
   const evaluation = { score, level, riskFactors, failureProbability }
 
   return {
-    equipmentId: device?.id || '',
-    equipmentName: device?.name || '',
+    equipmentId: effectiveDevice?.id || '',
+    equipmentName: effectiveDevice?.name || '',
     score,
     level,
     riskFactors,
     failureProbability,
-    diagnosis: generateHealthDiagnosis(device, evaluation),
+    diagnosis: generateHealthDiagnosis(effectiveDevice, evaluation),
+    effectiveDevice,
+    recovery: effectiveDevice.recovery || null,
     predictionWindow: '未来24小时',
     dataMode: '工业仿真数据',
   }

@@ -41,6 +41,7 @@ export function createProductionEvent(input = {}) {
     title: input.title || `${input.process}${input.parameter}${input.parameterStatus}`,
     description: input.description || `当前${input.parameter}${input.parameterStatus === '偏高' ? '超过工艺标准上限' : '低于工艺标准下限'}。`,
     status: 'pending', suggestion: Array.isArray(input.suggestion) ? [...input.suggestion] : ['复核工艺参数设定', '确认生产设备运行状态'],
+    adjustmentRecord: null, recovery: null, relatedAlarmId: '',
     createTime: time, updateTime: time,
   }
   events.unshift(event)
@@ -49,7 +50,7 @@ export function createProductionEvent(input = {}) {
 }
 
 export function getProductionEvents() {
-  return readEvents().map((item) => ({ ...item, suggestion: [...(item.suggestion || [])] }))
+  return readEvents().map((item) => ({ ...item, suggestion: [...(item.suggestion || [])], adjustmentRecord: item.adjustmentRecord ? { ...item.adjustmentRecord } : null, recovery: item.recovery ? { ...item.recovery } : null, relatedAlarmId: item.relatedAlarmId || '' }))
 }
 
 /** 事件只能从待确认更新为处理中。 */
@@ -64,14 +65,48 @@ export function updateProductionEventStatus(eventId, status) {
   return { updated: true, reason: 'updated', event: { ...event } }
 }
 
-/** 只有处理中的事件允许关闭。 */
+/** 只有恢复验证中的事件允许关闭。 */
 export function closeProductionEvent(eventId) {
   const events = readEvents()
   const event = events.find((item) => item.id === eventId)
   if (!event) return { closed: false, reason: 'not_found', event: null }
-  if (event.status !== 'processing') return { closed: false, reason: 'invalid_transition', event }
+  if (event.status !== 'recovery_pending') return { closed: false, reason: 'invalid_transition', event }
   event.status = 'closed'
   event.updateTime = formatTime()
   saveEvents(events)
   return { closed: true, reason: 'closed', event: { ...event } }
+}
+
+/** 参数执行完成后提交恢复结果；同一 adjustmentId 重复提交保持幂等。 */
+export function submitProductionEventRecovery(input = {}) {
+  const events = readEvents()
+  const event = events.find((item) => item.id === input.eventId)
+  if (!event) return { updated: false, reason: 'not_found', event: null }
+  if (event.adjustmentRecord?.adjustmentId === input.adjustmentId) return { updated: true, reason: 'already_submitted', event: { ...event } }
+  if (event.status !== 'processing') return { updated: false, reason: 'invalid_transition', event: { ...event } }
+  const time = formatTime()
+  event.adjustmentRecord = {
+    adjustmentId: input.adjustmentId || '', beforeValue: input.beforeValue, afterValue: input.afterValue,
+    operator: input.operator || '未填写', reason: input.reason || '', executeTime: input.executeTime || time,
+  }
+  event.recovery = {
+    parameterStatus: input.parameterStatus || (input.verificationPassed ? 'normal' : 'abnormal'),
+    verificationPassed: Boolean(input.verificationPassed), message: input.result || '', verifyTime: time,
+  }
+  event.relatedAlarmId = input.relatedAlarmId || event.relatedAlarmId || ''
+  event.status = 'recovery_pending'
+  event.updateTime = time
+  saveEvents(events)
+  return { updated: true, reason: 'recovery_submitted', event: { ...event } }
+}
+
+export function setProductionEventRelatedAlarm(eventId, alarmId) {
+  const events = readEvents()
+  const event = events.find((item) => item.id === eventId)
+  if (!event) return { updated: false, reason: 'not_found', event: null }
+  if (event.relatedAlarmId === alarmId) return { updated: true, reason: 'already_linked', event: { ...event } }
+  event.relatedAlarmId = alarmId || ''
+  event.updateTime = formatTime()
+  saveEvents(events)
+  return { updated: true, reason: 'linked', event: { ...event } }
 }

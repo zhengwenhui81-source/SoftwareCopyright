@@ -1,28 +1,10 @@
+import { processParameterRules } from './processParameterRules.js'
+
 /** 厚板生产工艺参数模拟数据层，仅负责采集记录、趋势查询和状态判断。 */
 const STORAGE_KEY = 'thick_plate_process_parameters'
+export const PROCESS_PARAMETER_CHANGED = 'process-parameter-changed'
 
-export const processParameterRules = {
-  板坯加热: {
-    furnaceTemperature: { name: '炉温', unit: '℃', min: 1180, max: 1230, type: 'temperature' },
-    heatingTime: { name: '加热时间', unit: 'min', min: 150, max: 180, type: 'time' },
-  },
-  粗轧: {
-    rollingForce: { name: '轧制力', unit: 'kN', min: 26000, max: 30000, type: 'pressure' },
-    rollingSpeed: { name: '轧制速度', unit: 'm/s', min: 2.5, max: 3.2, type: 'speed' },
-  },
-  精轧: {
-    rollingPressure: { name: '轧制压力', unit: 'kN', min: 28000, max: 31000, type: 'pressure' },
-    thickness: { name: '板厚', unit: 'mm', min: 29.7, max: 30.3, type: 'thickness' },
-  },
-  控冷: {
-    coolingRate: { name: '冷却速度', unit: '℃/s', min: 12, max: 18, type: 'speed' },
-    finishCoolingTemperature: { name: '终冷温度', unit: '℃', min: 620, max: 680, type: 'temperature' },
-  },
-  质量检测: {
-    thicknessDeviation: { name: '厚度偏差', unit: 'mm', min: -0.3, max: 0.3, type: 'thickness' },
-    surfaceQuality: { name: '表面质量等级', unit: '级', min: 1, max: 2, type: 'quality' },
-  },
-}
+export { processParameterRules }
 
 const baseValues = {
   板坯加热: { furnaceTemperature: 1216, heatingTime: 168 },
@@ -70,6 +52,63 @@ function readRecords() {
   return initial
 }
 
+function saveRecords(records) {
+  if (typeof window !== 'undefined') window.localStorage.setItem(STORAGE_KEY, JSON.stringify(records))
+}
+
+const runtimeSampleThresholds = {
+  furnaceTemperature: 2, heatingTime: 1, rollingForce: 100, rollingSpeed: .05,
+  rollingPressure: 100, thickness: .03, coolingRate: .2, finishCoolingTemperature: 2,
+  thicknessDeviation: .03, surfaceQuality: 1,
+}
+
+/** 追加生产运行仿真采样；同工序最多每10秒持久化一次，且参数需达到最小变化量。 */
+export function appendRuntimeParameterSample(input = {}) {
+  const { batchId, process } = input
+  const rules = processParameterRules[process]
+  if (!batchId || !process || !rules || !input.parameters) return { appended: false, reason: 'invalid_input', record: null }
+  const records = readRecords()
+  const previous = [...records].reverse().find((item) => item.batchId === batchId && item.process === process)
+  if (!previous) return { appended: false, reason: 'record_not_found', record: null }
+  const timestamp = input.timestamp || new Date().toLocaleString('sv-SE').replace('T', ' ')
+  const previousTime = Date.parse(String(previous.timestamp).replace(' ', 'T'))
+  const currentTime = Date.parse(String(timestamp).replace(' ', 'T'))
+  if (previous.source === 'simulation' && Number.isFinite(previousTime) && Number.isFinite(currentTime) && currentTime - previousTime < 10000) return { appended: false, reason: 'throttled', record: clone(previous) }
+  const monitored = Object.fromEntries(Object.keys(rules).filter((key) => Number.isFinite(Number(input.parameters[key]))).map((key) => [key, Number(input.parameters[key])]))
+  if (!Object.keys(monitored).length) return { appended: false, reason: 'no_monitored_parameter', record: clone(previous) }
+  const changed = Object.entries(monitored).some(([key, value]) => Math.abs(value - Number(previous.parameters[key])) >= (runtimeSampleThresholds[key] ?? .01))
+  if (!changed) return { appended: false, reason: 'change_below_threshold', record: clone(previous) }
+  const record = { batchId, process, processId: input.processId || '', parameters: { ...previous.parameters, ...monitored }, timestamp, source: 'simulation', adjustmentId: '' }
+  records.push(record); saveRecords(records)
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(PROCESS_PARAMETER_CHANGED, { detail: { batchId, process, processId: input.processId || '', parameters: clone(record.parameters), source: 'simulation', record: clone(record) } }))
+  return { appended: true, reason: 'appended', record: clone(record) }
+}
+
+/** 基于最新完整记录追加一次参数采样，不覆盖历史；adjustmentId 用于幂等去重。 */
+export function appendParameterSample(input = {}) {
+  const { batchId, process, parameterKey, adjustmentId } = input
+  const rule = processParameterRules[process]?.[parameterKey]
+  const value = Number(input.value)
+  if (!batchId || !process || !parameterKey || !rule || !Number.isFinite(value)) return { appended: false, reason: 'invalid_input', record: null }
+  const records = readRecords()
+  const duplicated = adjustmentId && records.find((item) => item.adjustmentId === adjustmentId)
+  if (duplicated) return { appended: false, reason: 'duplicate_adjustment', record: clone(duplicated) }
+  const previous = [...records].reverse().find((item) => item.batchId === batchId && item.process === process)
+  if (!previous) return { appended: false, reason: 'record_not_found', record: null }
+  const timestamp = input.timestamp || new Date().toLocaleString('sv-SE').replace('T', ' ')
+  const record = {
+    batchId, process,
+    parameters: { ...previous.parameters, [parameterKey]: value },
+    timestamp,
+    adjustmentId: adjustmentId || '',
+    source: 'adjustment',
+  }
+  records.push(record)
+  saveRecords(records)
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(PROCESS_PARAMETER_CHANGED, { detail: { batchId, process, parameterKey, value, adjustmentId: adjustmentId || '', source: 'adjustment', record: clone(record) } }))
+  return { appended: true, reason: 'appended', record: clone(record) }
+}
+
 /** 获取指定批次和工序的最新参数采样。 */
 export function getProcessParameters(batchId, process) {
   const records = readRecords().filter((item) => (!batchId || item.batchId === batchId) && (!process || item.process === process))
@@ -92,9 +131,9 @@ export function analyzeParameterStatus(record) {
     const value = Number(record.parameters[key])
     const status = value > rule.max ? '偏高' : value < rule.min ? '偏低' : '正常'
     return {
-      key, ...rule, value, range: `${rule.min} - ${rule.max} ${rule.unit}`, status,
+      key, ...rule, name: rule.parameterName, value, range: `${rule.min} - ${rule.max} ${rule.unit}`, status,
       level: status === '正常' ? 'normal' : status === '偏高' ? 'high' : 'low',
-      description: status === '正常' ? `${rule.name}处于厚板工艺标准范围内。` : `${rule.name}${status === '偏高' ? '超过上限' : '低于下限'}，建议复核工艺设定与采样状态。`,
+      description: status === '正常' ? `${rule.parameterName}处于厚板工艺标准范围内。` : `${rule.parameterName}${status === '偏高' ? '超过上限' : '低于下限'}，建议复核工艺设定与采样状态。`,
     }
   })
 }

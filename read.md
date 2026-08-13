@@ -1,460 +1,436 @@
-# 厚板生产全流程运行监控系统——第一天开发记录
+# 厚板生产全流程运行监控系统——开发记录
+
+> 整理日期：2026-08-12  
+> 项目目录：`E:\Zwen-codex\SoftwareCopyright`  
+> 项目性质：软件著作权展示 Demo  
+> 数据说明：全部业务数据均为工业仿真数据或前端 Mock 数据，不代表真实工业接入、真实设备预测或真实大模型服务。
 
 ## 一、项目基本信息
 
 项目名称：基于工业基座大模型的厚板生产全流程运行监控系统
 
-项目定位：面向软件著作权展示和项目答辩的工业智能监控系统 Demo，用于模拟钢铁厚板生产过程中的生产运行监控、设备状态分析、质量管理、异常报警、工业知识建模和大模型辅助决策。
+技术栈：
 
-当前阶段：第一天开发目标已完成。
-
-项目最终目录：
-
-```text
-E:\Zwen-codex\SoftwareCopyright
-```
-
-项目采用纯前端方式实现，不包含后端、数据库和服务器。所有工业数据、模型分析结果和业务操作均为 JavaScript Mock 数据或浏览器内存模拟。
-
-## 二、技术架构
-
-- Vue 3.5
-- Vite 6
-- Vue Router 4
+- Vue 3
+- Vite
+- Vue Router
 - Element Plus
-- ECharts 5
-- JavaScript
-- Vue Composition API
-- `<script setup>` 单文件组件
-- `localStorage` 模拟登录状态与角色权限
+- ECharts
+- JavaScript 与 Composition API
+- localStorage 持久化模拟数据
 
-项目入口：
+项目不使用后端、数据库、Pinia、TypeScript 或真实大模型 API，保持现有前端架构持续迭代。
 
-```text
-src/main.js
-```
+## 二、今天的开发主线
 
-路由配置：
+今天围绕“生产、设备、质量、报警”四类工业业务继续完善系统，形成了以下业务关系：
 
 ```text
-src/router/index.js
+生产计划 → 生产批次 → 工艺参数 → 生产异常事件
+
+设备状态 → 健康评价 → 故障预测 → 风险事件 → 维护工单 → 恢复模拟
+
+生产批次 → 质量检测 → 质量评价 → 缺陷分析 → 质量追溯
+
+多来源异常 → 统一报警事件 → 报警生命周期与处理记录
 ```
 
-主框架布局：
+所有新增功能均沿用现有 Vue3 单页应用架构，以 JavaScript 模块作为业务层，以 localStorage 作为演示数据持久化方式。
+
+## 三、设备健康与预测维护模块
+
+### 1. 设备健康评价
+
+新增 `src/equipmentHealth.js`，统一负责：
+
+- 健康评分计算
+- 健康等级判断
+- 风险因素分析
+- 故障概率模拟
+- 模拟诊断结论生成
+
+设备管理页面已拆分为模块化结构：
 
 ```text
-src/layouts/MainLayout.vue
+设备管理
+├── 设备总览        /equipment
+├── 健康诊断        /equipment-health
+├── 故障预测        /equipment-prediction
+└── 维护管理        /maintenance
 ```
 
-页面目录：
+其中设备总览保留设备列表、分类筛选、运行状态、趋势和基础详情；健康诊断复用 `HealthDiagnosis.vue` 展示健康评分、等级、故障概率、风险因素和诊断建议。
+
+### 2. 故障风险预测
+
+故障预测页面复用 `equipmentHealth.js` 的健康评价方法，展示：
+
+- 风险设备统计
+- 设备故障风险列表
+- 风险因素与预测依据
+- 推荐检查措施
+- 健康评分与故障概率模拟趋势
+
+页面明确标注“故障预测演示 · 基于工业仿真数据”。
+
+### 3. 设备风险事件
+
+新增 `src/equipmentEvent.js`，负责设备风险事件的生成、查询和状态更新。
+
+存储键：
 
 ```text
-src/views
+thick_plate_equipment_risk_events
 ```
 
-Mock 数据目录：
+事件可由健康评分过低、故障概率过高或用户在故障预测页面主动操作生成。同一设备、同一种异常只允许存在一条未关闭事件，避免重复创建。
+
+### 4. 预测维护闭环
+
+新增 `src/maintenance.js` 和维护管理页面。维护工单必须来源于设备风险事件，不进行随机创建。
+
+存储键：
 
 ```text
-src/mock
+thick_plate_maintenance_orders
 ```
 
-## 三、项目目录结构
+工单状态流程：
 
 ```text
-SoftwareCopyright
-├── index.html
-├── package.json
-├── package-lock.json
-├── vite.config.js
-├── README.md
-├── read.md
-├── dist
-└── src
-    ├── main.js
-    ├── App.vue
-    ├── auth.js
-    ├── industrialAI.js
-    ├── layouts
-    │   └── MainLayout.vue
-    ├── router
-    │   └── index.js
-    ├── styles
-    │   └── index.css
-    ├── components
-    │   ├── PagePlaceholder.vue
-    │   ├── charts
-    │   │   └── BaseChart.vue
-    │   ├── production
-    │   │   └── ProcessNode.vue
-    │   ├── equipment
-    │   │   └── EquipmentCard.vue
-    │   └── quality
-    │       └── QualityMetricCard.vue
-    ├── mock
-    │   ├── dashboard.js
-    │   ├── production.js
-    │   ├── equipment.js
-    │   ├── quality.js
-    │   ├── alarm.js
-    │   ├── knowledgeGraph.js
-    │   └── chat.js
-    └── views
-        ├── Login.vue
-        ├── Dashboard.vue
-        ├── Production.vue
-        ├── Equipment.vue
-        ├── Quality.vue
-        ├── Alarm.vue
-        ├── Decision.vue
-        ├── KnowledgeGraph.vue
-        └── AIChat.vue
+待确认 → 已安排 → 执行中 → 已完成
 ```
 
-## 四、当天完成的主要工作
+工单完成后仅展示工业仿真恢复效果，例如健康评分提高、故障概率下降、风险等级降低，不修改或声称接入真实设备数据。
 
-### 1. 创建项目基础框架
+## 四、生产计划、批次与过程监控
 
-完成 Vue 3、Vite、Element Plus 和 Vue Router 项目骨架，建立登录页、主框架、左侧菜单、顶部标题栏、页面路由及角色权限。
+### 1. 生产计划与批次
 
-登录页允许输入任意非空用户名和密码，并选择管理员、工程师或操作员角色。登录信息保存在浏览器 `localStorage` 中，仅用于 Demo 演示，不是真实身份认证。
+新增 `src/productionPlan.js`，管理厚板生产计划、批次与进度。
 
-### 2. 运行总览
-
-文件：
+存储键：
 
 ```text
-src/views/Dashboard.vue
-src/mock/dashboard.js
-src/components/charts/BaseChart.vue
+thick_plate_production_plan
 ```
 
-已实现：
+生产计划包含订单号、钢种、规格、计划数量、完成数量、客户、交付日期和状态；生产批次通过 `planId` 与计划关联，记录当前工序、生产进度、开始时间、操作人员和运行状态。
 
-- 当前生产状态
-- 今日产量
-- 设备运行率
-- 产品质量合格率
-- 当前报警数量
-- 板坯温度和轧制温度趋势
-- 分时产量统计
-- 设备健康雷达图
-- 能源消耗分析
-- 定时模拟数据波动
-- 图表尺寸自适应
-
-### 3. 生产监控
-
-文件：
+`Production.vue` 保留原八段生产流程，同时新增生产计划概览和批次详情：
 
 ```text
-src/views/Production.vue
-src/mock/production.js
-src/components/production/ProcessNode.vue
+炼钢与连铸 → 板坯加热 → 粗轧 → 精轧 → 控冷 → 矫直 → 质量检测 → 入库
 ```
 
-生产流程包括：
+### 2. 工艺参数趋势分析
+
+新增 `src/processParameter.js`，负责工艺参数模拟、历史趋势和状态分析。
+
+存储键：
 
 ```text
-炼钢与连铸
-→ 板坯加热
-→ 粗轧
-→ 精轧
-→ 控冷
-→ 矫直
-→ 质量检测
-→ 入库
+thick_plate_process_parameters
 ```
 
-已实现节点状态、关键参数、工序进度、自动推进、暂停模拟、详情弹窗、参数确认和异常上报。
+支持的主要工序参数包括：
 
-### 4. 设备管理
+- 板坯加热：炉温、加热时间
+- 粗轧：轧制力、轧制速度
+- 精轧：轧制压力、板厚
+- 控冷：冷却速度、终冷温度
+- 质量检测：厚度偏差、表面质量
 
-文件：
+趋势图展示历史曲线、正常范围、上下限和当前异常点。参数模块只负责状态判断，不直接生成报警，继续保持与 `industrialAlarmLink.js` 的职责分离。
+
+### 3. 生产异常事件
+
+新增 `src/productionEvent.js`，根据 `analyzeParameterStatus()` 的分析结果生成生产异常事件。
+
+存储键：
 
 ```text
-src/views/Equipment.vue
-src/mock/equipment.js
-src/components/equipment/EquipmentCard.vue
+thick_plate_production_events
 ```
 
-模拟设备包括：
+生成条件为参数状态“偏高”或“偏低”。相同批次、工序和参数在事件未关闭时不会重复创建；事件关闭后允许重新生成。
 
-- 加热炉系统
-- 粗轧机组
-- 精轧机组
-- 控冷系统
-- 在线检测设备
-
-已实现温度、压力、振动、运行时间、负载、健康评分、设备筛选、状态趋势、预警提示和模拟维护工单。
-
-### 5. 质量管理
-
-文件：
+事件状态流程：
 
 ```text
-src/views/Quality.vue
-src/mock/quality.js
-src/components/quality/QualityMetricCard.vue
+待确认 → 处理中 → 已关闭
 ```
 
-已实现板厚偏差、板形质量、表面缺陷率、性能达标率、产品合格率、质量趋势、缺陷分布、批次筛选、质量详情、复检操作和报告导出演示。
+## 五、质量管理深化
 
-### 6. 报警中心
+### 1. 批次质量数据关联
 
-文件：
+新增 `src/qualityData.js`，使用 `batchId` 将生产批次与质量检测结果关联。
+
+存储键：
 
 ```text
-src/views/Alarm.vue
-src/mock/alarm.js
+thick_plate_quality_data
 ```
 
-已实现严重、警告、提示三级报警，以及待处理、处理中、已处理、已关闭四种状态。支持报警统计、趋势图、查询筛选、详情查看、负责人指派、处理完成和关闭操作。
+质量检测指标包括：
 
-### 7. 智能决策
+- 厚度偏差
+- 表面缺陷率
+- 板形指标
+- 屈服强度
+- 抗拉强度
 
-文件：
+质量评分等级：
+
+- 90～100：优秀
+- 80～89：合格
+- 65～79：关注
+- 65 以下：异常
+
+切换生产批次时，质量数据、评分、等级和异常指标同步变化；无对应数据时安全显示“暂无检测数据”。
+
+### 2. 缺陷分析与质量追溯
+
+新增组件：
+
+- `src/components/quality/BatchQualityCard.vue`
+- `src/components/quality/DefectAnalysis.vue`
+- `src/components/quality/QualityTrace.vue`
+
+缺陷分析覆盖厚度偏差、表面裂纹、氧化铁皮和板形异常，并给出基于工业规则的可能原因。
+
+质量追溯链为：
 
 ```text
-src/views/Decision.vue
-src/industrialAI.js
+订单 → 生产批次 → 生产工序 → 关键参数 → 关联设备 → 质量结果
 ```
 
-已实现：
+数据通过 `batchId` 和设备编号进行关联展示，不在组件内重复复制生产与设备数据。
 
-- 工业仿真数据输入
-- 生产状态、设备参数和质量数据展示
-- 工业知识本体调用演示
-- 历史案例匹配演示
-- 设备状态分析演示
-- 决策方案生成演示
-- 异常类型
-- 风险等级
-- 分析依据
-- 建议措施
-- 置信度
-- 决策确认与人工复核
+## 六、报警中心现状分析
 
-该模块不调用真实大模型，而是根据关键词匹配预定义规则，并使用延时模拟模型推理过程。
+现有报警主要来源包括：
 
-页面统一显示：
+1. `industrialAlarmLink.js` 根据生产工序参数阈值或人工上报生成联动报警。
+2. `productionEvent.js` 保存生产参数异常事件。
+3. `equipmentEvent.js` 保存设备健康与故障预测产生的风险事件。
+4. `maintenance.js` 保存由设备风险事件生成的维护工单。
+
+原联动报警存储键为：
 
 ```text
-工业基座大模型 · 模拟推理
+plate-monitor-linked-alarms
 ```
 
-### 8. 工业本体知识图谱
+分析发现，原系统虽然具备报警展示、确认、处理和关闭能力，但不同来源事件的数据结构与生命周期不统一，生产异常、设备风险和维护恢复之间还缺少统一的报警业务层。
 
-文件：
+工业报警完整闭环应接近：
 
 ```text
-src/views/KnowledgeGraph.vue
-src/mock/knowledgeGraph.js
+异常发现 → 报警产生 → 报警确认 → 原因分析 → 处理执行 → 恢复验证 → 报警关闭
 ```
 
-图谱使用 ECharts Graph 实现，包含六层工业本体：
+因此本阶段决定先新增统一报警事件模块，不立即修改 `Alarm.vue` 或其他业务页面，以降低对现有功能的影响。
 
-- 产品层
-- 工艺层
-- 设备层
-- 参数层
-- 质量层
-- 异常层
+## 七、统一报警事件业务层
 
-支持图谱缩放、拖动画布、拖动节点、搜索节点、层级筛选和节点属性查看。
-
-所有关系边都具有明确的 `name`、`label` 和 `value` 字段。当前关系语义包括：
-
-- 属于
-- 包含
-- 关联
-- 影响
-- 检测
-- 产生异常
-
-ECharts 边标签显式读取 `label`，缺失时统一显示“关联”，避免出现 `undefined`、`null` 或空关系文字。
-
-### 9. 工业大模型助手
-
-文件：
+### 1. 新增文件
 
 ```text
-src/views/AIChat.vue
-src/mock/chat.js
-src/industrialAI.js
+src/alarmEvent.js
 ```
 
-固定演示问题：
+该模块只负责业务数据，不负责页面、图表或 UI 逻辑。
 
-- 分析当前生产状态
-- 诊断设备异常
-- 解释质量问题
-- 优化轧制参数
+主要职责：
 
-回答格式：
+- 统一不同来源异常的数据结构
+- 将来源数据适配为标准报警事件
+- 管理报警生命周期
+- 保存报警处理时间线和恢复验证信息
+- 提供报警查询与过滤接口
+- 兼容现有联动报警数据
+
+### 2. 标准报警结构
+
+统一字段包括：
 
 ```text
-【分析对象】
-【异常状态】
-【原因分析】
-【知识依据】
-【优化建议】
+id
+sourceType
+sourceEventId
+domain
+batchId
+equipmentId
+equipmentName
+processId
+processName
+parameterKey
+parameterName
+title
+description
+level
+currentValue
+threshold
+unit
+healthScore
+failureProbability
+status
+owner
+causeAnalysis
+suggestions
+relatedEventId
+relatedOrderId
+timeline
+recovery
+createTime
+updateTime
 ```
 
-页面统一显示：
+来源类型 `sourceType` 支持：
+
+- `production_alarm`
+- `production_event`
+- `equipment_event`
+- `maintenance`
+
+业务领域 `domain` 支持：
+
+- `production`
+- `equipment`
+- `quality`
+
+### 3. 报警状态机
+
+标准状态流程：
 
 ```text
-工业基座大模型 · 智能分析演示
+new → acknowledged → processing → recovery_pending → closed
 ```
 
-当前使用前端规则模拟，没有接入真实模型 API。
-
-## 五、菜单与角色权限
-
-菜单顺序：
-
-1. 运行总览
-2. 生产监控
-3. 设备管理
-4. 质量管理
-5. 报警中心
-6. 智能决策
-7. 工业本体知识图谱
-8. 工业大模型助手
-
-实际路由权限：
-
-- 管理员：全部模块
-- 工程师：运行总览、设备管理、质量管理、智能决策
-- 操作员：运行总览、生产监控
-
-权限只在前端通过路由元数据和 `localStorage` 模拟，不具备生产系统安全性。
-
-## 六、演示模式说明
-
-系统顶部已增加：
+额外终止状态：
 
 ```text
-DEMO · 工业仿真数据
+cancelled
 ```
 
-容易造成真实工业接入误解的文案已经调整为：
+状态转换由 `validateAlarmTransition()` 统一控制，页面不能直接修改状态。例如 `new → closed` 属于非法跳转，会被拒绝。恢复验证未提交前不能关闭报警。
 
-- 工业仿真数据
-- 模拟数据运行
-- 智能分析演示
-- 模拟批次
-- 前端规则模拟，未接入真实模型 API
+### 4. 核心接口
 
-AI 助手欢迎语明确说明其依据是工业仿真数据、模拟设备状态、质量数据和工业本体知识。
+`alarmEvent.js` 提供：
 
-## 七、真实功能与模拟功能
+- `createAlarmEvent()`：适配来源数据、去重并保存标准报警
+- `getAlarmEvents()`：查询全部报警，支持按状态、设备和来源过滤
+- `getAlarmEventById()`：根据编号获取报警
+- `validateAlarmTransition()`：校验状态转换
+- `acknowledgeAlarm()`：确认报警并记录操作人和时间
+- `startAlarmProcessing()`：进入处理状态
+- `appendAlarmAction()`：追加处理动作与结果
+- `submitRecoveryVerification()`：提交恢复验证
+- `closeAlarmEvent()`：通过恢复验证后关闭报警
+- `normalizeLegacyAlarm()`：转换旧联动报警
+- `fromProductionAlarm()`：适配生产联动报警
+- `fromProductionEvent()`：适配生产异常事件
+- `fromEquipmentEvent()`：适配设备风险事件
+- `fromMaintenanceOrder()`：适配维护工单恢复信息
 
-真实可运行的前端功能：
+### 5. 持久化与兼容
 
-- 页面路由
-- 登录状态保存
-- 角色权限过滤
-- 图表绘制
-- 数据定时变化
-- 表格搜索与筛选
-- 弹窗交互
-- 工序推进
-- 报警状态操作
-- 图谱拖动与节点点击
-- 聊天消息发送
-- 模拟决策确认
-
-模拟展示内容：
-
-- 生产数据
-- 设备数据
-- 质量数据
-- 报警数据
-- 能源数据
-- 设备健康评分
-- 维护工单
-- 报告导出
-- 知识图谱数据源
-- 工业知识检索过程
-- 历史案例匹配过程
-- 智能决策结果
-- 大模型回复
-
-所有页面数据主要保存在组件内存或 `src/mock` 文件中。刷新页面后，部分操作状态会恢复到初始值。
-
-## 八、最终检查结果
-
-已执行全项目关键字检查：
+统一报警使用新的 localStorage 键：
 
 ```text
-undefined
-null
-TODO
-FIXME
+thick_plate_alarm_events
 ```
 
-检查结论：
+原有键 `plate-monitor-linked-alarms` 未删除、未覆盖，保证旧报警数据与已有页面功能继续可用。
 
-- 用户界面没有直接显示 `undefined`
-- 用户界面没有直接显示 `null`
-- 没有遗留 `TODO`
-- 没有遗留 `FIXME`
-- 代码内部存在合法的 `null/undefined` 初始状态，不会直接渲染到界面
-- 没有遗留 `PlateMind-Industry-7B` 虚构模型名称
-- 没有“真实接入”“真实在线”“真实大模型”等误导性界面描述
+旧字段映射包括：
 
-## 九、运行方式
-
-安装依赖：
-
-```bash
-cd E:\Zwen-codex\SoftwareCopyright
-npm install
+```text
+device           → equipmentName
+time             → createTime
+triggerParameter → parameterName
+value            → currentValue 与 unit
+batchNo          → batchId
 ```
 
-启动开发环境：
+报警去重依据为 `sourceType + sourceEventId`，相同来源事件不会重复创建统一报警。
 
-```bash
-npm run dev
+### 6. 时间线记录
+
+报警确认、开始处理、处理动作、恢复验证和关闭都会写入 `timeline`。示例：
+
+```javascript
+{
+  action: 'acknowledge',
+  operator: '张工',
+  time: '2026-08-12 10:00:00'
+}
 ```
 
-生产构建：
+处理动作还可记录操作内容和结果，为后续报警中心闭环展示提供数据基础。
 
-```bash
-npm run build
-```
+## 八、本阶段测试结果
 
-预览构建结果：
+已使用隔离的内存 localStorage 对 `alarmEvent.js` 进行业务测试：
 
-```bash
-npm run preview
-```
+- 生产联动报警转换成功
+- 生产异常事件转换成功
+- 设备风险事件转换成功
+- 维护工单转换成功
+- 重复来源事件能够阻止重复报警
+- 非法状态跳转 `new → closed` 能够被拒绝
+- 完整状态流程能够正常执行
+- timeline 操作记录正常
+- 按设备、来源和状态过滤正常
+- localStorage 保存与读取正常
 
-## 十、构建状态
+执行 `npm run build` 构建成功：
 
-最终执行 `npm run build` 成功：
-
-- 2,199 个模块转换完成
-- 无 JavaScript 语法错误
+- 2,237 个模块完成转换
+- 无 JavaScript 编译错误
 - 无 Vue 模板编译错误
 - 无模块引用错误
-- `dist/index.html` 正常生成
+- 仅存在原有的包体积提示，不影响运行
 
-构建中存在 ECharts、Element Plus 公共包体积提示和第三方依赖注释提示，不影响当前 Demo 运行。
+## 九、本次实际修改范围
 
-## 十一、当天的重要约定
+最新统一报警事件阶段仅新增：
 
-1. 不重新创建项目。
-2. 不大规模重构页面。
-3. 不引入 Pinia 等新状态管理。
-4. 不接入真实后端、数据库或模型 API。
-5. 所有数据保持前端 Mock 和工业仿真定位。
-6. 保持深色工业风、科技蓝和数字孪生监控平台风格。
-7. 不使用具体虚构模型名称。
-8. 最终项目目录只保留英文名称 `SoftwareCopyright`。
+```text
+src/alarmEvent.js
+```
 
----
+未修改：
 
-记录日期：2026-08-10
+- `src/views/Alarm.vue`
+- `src/views/Production.vue`
+- `src/views/Equipment.vue`
+- `src/views/Maintenance.vue`
+- `src/industrialAlarmLink.js`
 
-当前结论：第一天开发目标已完成，系统可以进入软件著作权材料整理、项目答辩演示和后续联调阶段。
+因此当前已有页面和报警联动逻辑不受影响。统一报警模块目前作为独立业务层存在，等待下一阶段再接入报警中心页面。
+
+## 十、当前项目约束
+
+后续继续遵守以下约定：
+
+1. 不重新创建项目，不大规模重构现有页面。
+2. 保持 Vue3、Vite、Element Plus、Vue Router 和 ECharts 架构。
+3. 不引入后端、数据库、Pinia 或 TypeScript。
+4. 所有业务数据继续使用 JavaScript Mock 和 localStorage。
+5. 不将模拟功能描述为真实工业接入、真实设备预测或真实大模型。
+6. 保持“DEMO / 工业仿真数据 / 智能分析演示”等标识。
+7. 项目最终只保留英文目录名 `SoftwareCopyright`。
+
+## 十一、下一阶段建议
+
+下一阶段可在保持现有页面布局的前提下，将 `Alarm.vue` 逐步接入 `alarmEvent.js`：
+
+1. 先以只读方式同时展示旧报警与统一报警。
+2. 再将确认、处理、恢复验证、关闭操作迁移到统一状态机接口。
+3. 最后建立维护完成结果向报警恢复验证的反馈关系。
+
+迁移过程中应继续保留旧存储键和兼容适配器，避免一次性替换导致现有生产报警联动失效。

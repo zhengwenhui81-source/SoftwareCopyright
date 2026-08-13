@@ -1,3 +1,5 @@
+import { saveEquipmentRecovery } from './equipmentRecovery.js'
+
 /** 预测维护工单数据层：使用 localStorage 持久化，不连接后端。 */
 const STORAGE_KEY = 'thick_plate_maintenance_orders'
 export const MAINTENANCE_CHANGED = 'maintenance-order-changed'
@@ -78,12 +80,27 @@ export function completeMaintenanceOrder(orderId, owner) {
   const beforeProbability = Number(order.beforeProbability) || 50
   order.status = 'completed'
   if (owner?.trim()) order.owner = owner.trim()
+  const safeParameters = {
+    'RF-01': { temperature: 1210, pressure: 0.42, vibration: 1.2, load: 80 },
+    'RM-01': { temperature: 68, pressure: 28, vibration: 2.4, load: 78 },
+    'FM-01': { temperature: 70, pressure: 30, vibration: 2.2, load: 78 },
+    'ACC-01': { temperature: 34, pressure: 0.62, vibration: 1, load: 72 },
+    'UT-01': { temperature: 42, pressure: 0.31, vibration: 0.8, load: 65 },
+  }
+  const parameterOverrides = { ...(safeParameters[order.equipmentId] || { vibration: 2.2, load: 78 }) }
   order.recovery = {
     beforeHealth, afterHealth: Math.min(95, Math.max(85, beforeHealth + 20)),
     beforeProbability, afterProbability: Math.max(8, Math.min(20, beforeProbability - 30)),
-    riskLevel: '低风险', description: '维护完成后关键风险参数恢复至工业仿真安全区间。',
+    riskLevel: '低风险', parameterOverrides, description: '维护完成后关键风险参数恢复至工业仿真安全区间。',
   }
   order.updateTime = formatTime()
+  saveEquipmentRecovery({
+    equipmentId: order.equipmentId, eventId: order.eventId, orderId: order.id,
+    parameterOverrides, beforeHealth, afterHealth: order.recovery.afterHealth,
+    beforeProbability, afterProbability: order.recovery.afterProbability,
+    riskLevelBefore: order.priority === 'high' ? '高风险' : '中风险', riskLevelAfter: '低风险',
+    description: order.recovery.description,
+  })
   saveOrders(orders)
   return { completed: true, reason: 'completed', order: { ...order } }
 }

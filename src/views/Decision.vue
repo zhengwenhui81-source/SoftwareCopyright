@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { analyzeIndustrialIssue } from '@/industrialAI'
+import MultiSourceDecision from '@/components/decision/MultiSourceDecision.vue'
 
 const issue = ref('精轧阶段轧制力异常升高')
 const loading = ref(false)
@@ -19,7 +20,8 @@ function confirmDecision(){ confirmed.value=true; const item=history.value.find(
 onBeforeUnmount(()=>clearInterval(stepTimer))
 </script>
 <template>
- <div class="decision-page">
+ <MultiSourceDecision />
+ <div v-if="false" class="decision-page">
   <section class="page-header"><div><p>INDUSTRIAL FOUNDATION MODEL DECISION</p><h2>工业大模型辅助决策</h2></div><div class="model"><i></i><b>工业基座大模型 · 模拟推理</b><el-tag type="primary" size="small">模拟</el-tag></div></section>
   <section class="workspace">
    <article class="input-panel"><header><i></i><h3>工业数据输入</h3><span>INDUSTRIAL DATA INPUT</span></header><div class="data-groups"><section><h4><el-icon><TrendCharts/></el-icon>生产状态</h4><div><span>当前工序</span><b>{{industrialData.productionStatus}}</b></div><div><span>板坯温度</span><b>{{industrialData.slabTemperature}} ℃</b></div></section><section><h4><el-icon><Setting/></el-icon>设备参数</h4><div><span>轧制力</span><b>{{industrialData.rollingForce}} kN</b></div><div><span>轧制速度</span><b>{{industrialData.rollingSpeed}} m/s</b></div><div><span>轴承振动</span><b class="warn">{{industrialData.vibration}} mm/s</b></div></section><section><h4><el-icon><CircleCheck/></el-icon>质量数据</h4><div><span>厚度偏差</span><b>{{industrialData.thicknessDeviation}} mm</b></div><div><span>产品合格率</span><b>{{industrialData.qualifiedRate}}%</b></div></section></div><h4 class="issue-title">异常情况描述</h4><el-input v-model="issue" type="textarea" :rows="3" maxlength="300" show-word-limit/><div class="examples"><button v-for="item in examples" :key="item" @click="issue=item">{{item}}</button></div><el-button type="primary" size="large" :loading="loading" class="analyze-btn" @click="analyze"><el-icon><MagicStick/></el-icon>启动工业基座大模型分析</el-button></article>

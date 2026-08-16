@@ -52,6 +52,8 @@ getLinkedAlarms().forEach((item) => createAlarmEvent(item, 'production_alarm'))
 syncBusinessEventsToAlarms()
 
 const alarms = ref(getAlarmEvents())
+const isDev = import.meta.env.DEV
+const showDevData = ref(false)
 const level = ref('')
 const status = ref('')
 const keyword = ref('')
@@ -61,19 +63,32 @@ const assignOwner = ref('')
 const actionForm = ref({ action: '', operator: '', result: '' })
 const recoveryForm = ref({ verificationType: '人工复核', description: '', verificationResult: 'passed', operator: '' })
 
-const filtered = computed(() => alarms.value.filter((item) => {
+const visibleAlarms = computed(() => alarms.value.filter((item) => !item.isDevTest || (isDev && showDevData.value)))
+const filtered = computed(() => visibleAlarms.value.filter((item) => {
   const text = `${item.id}${item.title}${item.equipmentName}${item.batchId}${item.processName}${item.parameterName}${item.description}`.toLowerCase()
   return (!level.value || item.level === level.value)
     && (!status.value || item.status === status.value)
     && (!keyword.value || text.includes(keyword.value.toLowerCase()))
 }))
 const stats = computed(() => ({
-  current: alarms.value.filter((item) => !['closed', 'cancelled'].includes(item.status)).length,
-  processing: alarms.value.filter((item) => ['acknowledged', 'processing', 'recovery_pending'].includes(item.status)).length,
-  closed: alarms.value.filter((item) => item.status === 'closed').length,
-  critical: alarms.value.filter((item) => item.level === 'critical' && !['closed', 'cancelled'].includes(item.status)).length,
+  current: visibleAlarms.value.filter((item) => !['closed', 'cancelled'].includes(item.status)).length,
+  processing: visibleAlarms.value.filter((item) => ['acknowledged', 'processing', 'recovery_pending'].includes(item.status)).length,
+  closed: visibleAlarms.value.filter((item) => item.status === 'closed').length,
+  critical: visibleAlarms.value.filter((item) => item.level === 'critical' && !['closed', 'cancelled'].includes(item.status)).length,
 }))
-const trendOption = computed(() => ({ color: ['#ef5b5b', '#f1aa45', '#359fe8'], tooltip: { trigger: 'axis' }, legend: { right: 8, top: 0, textStyle: { color: '#7897ad' } }, grid: { left: 40, right: 16, top: 38, bottom: 24 }, xAxis: { type: 'category', data: alarmTrend.times, axisLine: { lineStyle: { color: '#31516a' } }, axisLabel: { color: '#7897ad' } }, yAxis: { type: 'value', minInterval: 1, axisLabel: { color: '#7897ad' }, splitLine: { lineStyle: { color: 'rgba(100,145,177,.13)', type: 'dashed' } }, }, series: [{ name: '严重', type: 'bar', stack: 'alarm', data: alarmTrend.critical }, { name: '警告', type: 'bar', stack: 'alarm', data: alarmTrend.warning }, { name: '提示', type: 'bar', stack: 'alarm', data: alarmTrend.info }] }))
+const trendData = computed(() => {
+  const result = { critical: alarmTrend.times.map(() => 0), warning: alarmTrend.times.map(() => 0), info: alarmTrend.times.map(() => 0) }
+  const today = new Date().toLocaleDateString('sv-SE')
+  visibleAlarms.value.filter((item) => String(item.createTime || '').startsWith(today)).forEach((item) => {
+    const time = String(item.createTime).slice(11, 16)
+    let index = alarmTrend.times.findLastIndex((label) => label <= time)
+    if (index < 0) index = 0
+    const levelKey = ['critical', 'warning', 'info'].includes(item.level) ? item.level : 'warning'
+    result[levelKey][index] += 1
+  })
+  return result
+})
+const trendOption = computed(() => ({ color: ['#ef5b5b', '#f1aa45', '#359fe8'], tooltip: { trigger: 'axis' }, legend: { right: 8, top: 0, textStyle: { color: '#7897ad' } }, grid: { left: 40, right: 16, top: 38, bottom: 24 }, xAxis: { type: 'category', data: alarmTrend.times, axisLine: { lineStyle: { color: '#31516a' } }, axisLabel: { color: '#7897ad' } }, yAxis: { type: 'value', minInterval: 1, axisLabel: { color: '#7897ad' }, splitLine: { lineStyle: { color: 'rgba(100,145,177,.13)', type: 'dashed' } }, }, series: [{ name: '严重', type: 'bar', stack: 'alarm', data: trendData.value.critical }, { name: '警告', type: 'bar', stack: 'alarm', data: trendData.value.warning }, { name: '提示', type: 'bar', stack: 'alarm', data: trendData.value.info }] }))
 const hasProductionContext = computed(() => Boolean(selected.value?.batchId || selected.value?.processName || selected.value?.parameterName))
 const hasEquipmentContext = computed(() => Boolean(selected.value?.equipmentId || selected.value?.equipmentName || selected.value?.healthScore != null || selected.value?.failureProbability != null))
 const hasQualityContext = computed(() => selected.value?.sourceType === 'quality_event' && Boolean(selected.value?.qualityContext))
@@ -162,7 +177,7 @@ onBeforeUnmount(() => {
       <article class="trend"><header><i></i><h3>今日报警趋势</h3></header><BaseChart :option="trendOption" height="170px" /></article>
     </section>
     <section class="table-panel">
-      <header><div><i></i><h3>统一报警记录</h3><span>ALARM EVENT RECORDS</span></div><div class="filters"><el-input v-model="keyword" clearable size="small" prefix-icon="Search" placeholder="编号 / 标题 / 设备 / 批次" /><el-select v-model="level" clearable size="small" placeholder="报警等级"><el-option label="严重" value="critical" /><el-option label="警告" value="warning" /><el-option label="提示" value="info" /></el-select><el-select v-model="status" clearable size="small" placeholder="处理状态"><el-option v-for="(item, key) in statusMeta" :key="key" :label="item.label" :value="key" /></el-select></div></header>
+      <header><div><i></i><h3>统一报警记录</h3><span>ALARM EVENT RECORDS</span></div><div class="filters"><label v-if="isDev" class="dev-data-toggle"><el-switch v-model="showDevData" size="small" />显示开发测试数据</label><el-input v-model="keyword" clearable size="small" prefix-icon="Search" placeholder="编号 / 标题 / 设备 / 批次" /><el-select v-model="level" clearable size="small" placeholder="报警等级"><el-option label="严重" value="critical" /><el-option label="警告" value="warning" /><el-option label="提示" value="info" /></el-select><el-select v-model="status" clearable size="small" placeholder="处理状态"><el-option v-for="(item, key) in statusMeta" :key="key" :label="item.label" :value="key" /></el-select></div></header>
       <el-table :data="filtered" class="alarm-table" height="430">
         <el-table-column prop="id" label="报警编号" min-width="155"><template #default="scope"><span class="alarm-id">{{ scope.row.id }}</span></template></el-table-column>
         <el-table-column prop="title" label="报警标题" min-width="190" show-overflow-tooltip />
@@ -225,4 +240,5 @@ onBeforeUnmount(() => {
 .alarm-page{color:#dcecf7}.page-header{display:flex;justify-content:space-between;align-items:center;padding:4px 2px 15px}.page-header p{margin:0 0 4px;color:#3d9ccb;font:10px Consolas;letter-spacing:2px}.page-header h2{margin:0;color:#edf8ff;font-size:21px}.live{color:#6f91a8;font-size:10px}.live i{display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#2bd398;box-shadow:0 0 8px #2bd398}.top-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:12px;margin-bottom:12px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.stats article{position:relative;min-height:118px;padding:20px;background:linear-gradient(145deg,#0d3453,#09263e);border:1px solid #224e6c;border-top:2px solid #31c8d8}.stats span{color:#7394aa;font-size:10px}.stats b{display:block;margin-top:10px;color:#e5f4fc;font:600 30px Consolas}.stats .el-icon{position:absolute;right:16px;bottom:18px;color:#245d7d;font-size:29px}.stats .red{border-top-color:#ef5b5b}.stats .red b{color:#ef6b6b}.stats .orange{border-top-color:#f1aa45}.stats .orange b{color:#f1aa45}.stats .blue{border-top-color:#359fe8}.stats .blue b{color:#4ab0ef}.trend,.table-panel{padding:13px 15px 4px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.trend header,.table-panel>header>div:first-child{display:flex;align-items:center;gap:8px}.trend header i,.table-panel header i{width:3px;height:15px;background:#2bb7ec}.trend h3,.table-panel h3{margin:0;color:#dceefa;font-size:13px}.table-panel{padding-bottom:14px}.table-panel>header{min-height:48px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid rgba(55,107,142,.35)}.table-panel header span{color:#49748e;font:9px Consolas}.filters{display:flex;gap:8px;width:560px}.filters .el-input{flex:1}.filters .el-select{width:125px}.alarm-table{--el-table-bg-color:#0a2942;--el-table-tr-bg-color:#0a2942;--el-table-row-hover-bg-color:#123d5b;--el-table-header-bg-color:#0d3451;--el-table-border-color:#204760;--el-table-text-color:#a9c1d0;--el-table-header-text-color:#7195ad;font-size:11px}.alarm-id{color:#43b8ed;font:11px Consolas}.alarm-banner{display:flex;justify-content:space-between;align-items:center;padding:15px 18px;margin-bottom:15px;background:#f4f7f9;border-left:4px solid #389fe0}.alarm-banner.critical{border-color:#ef5b5b}.alarm-banner.warning{border-color:#e6a23c}.alarm-banner small{color:#4585a9;font:10px Consolas}.alarm-banner h3{margin:5px 0;color:#293f51;font-size:15px}.alarm-banner p{margin:0;color:#82939f;font-size:10px}.banner-tags{display:flex;gap:8px}.alarm-page :deep(.el-dialog h4){margin:17px 0 9px;color:#354e61;font-size:13px}.analysis-box,.operation-box{padding:12px 15px;border:1px solid #d8e4eb;background:#f7fafc;color:#40596a;font-size:12px}.analysis-box p{margin:4px 0 9px}.analysis-box ul{margin:7px 0 0;padding-left:20px}.operation-box{margin-top:14px}.operation-box>.el-button{margin-top:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.event-timeline{max-height:240px;overflow:auto;padding-top:8px}.event-timeline span{margin-left:10px;color:#6e8797;font-size:11px}.event-timeline p{margin:5px 0;color:#526b7a;font-size:11px}@media(max-width:1150px){.top-grid{grid-template-columns:1fr}.stats article{min-height:90px}}@media(max-width:700px){.stats{grid-template-columns:repeat(2,1fr)}.table-panel>header{height:auto;flex-direction:column;gap:10px;padding-bottom:10px}.filters{width:100%}.form-grid{grid-template-columns:1fr}}
 .simulation-note{margin:7px 0 0;color:#6f8796;font-size:10px}
 .handling-history{display:grid;gap:9px}.handling-history article{padding:11px 13px;border:1px solid #d8e4eb;background:#f7fafc;color:#40596a}.handling-history time{display:block;margin-bottom:7px;color:#8296a3;font:10px Consolas}.handling-history p{margin:4px 0;font-size:11px;line-height:1.6}.handling-history b{color:#314d61}
+.filters{width:auto;min-width:560px}.dev-data-toggle{display:flex;align-items:center;gap:5px;color:#8ba8ba;font-size:10px;white-space:nowrap}
 </style>

@@ -130,6 +130,8 @@ function baseAlarm(sourceType, sourceEventId, overrides = {}) {
     timeline: Array.isArray(overrides.timeline) ? clone(overrides.timeline) : [],
     recovery: overrides.recovery ? clone(overrides.recovery) : null,
     qualityContext: overrides.qualityContext ? clone(overrides.qualityContext) : null,
+    isDevTest: overrides.isDevTest === true,
+    testScenario: overrides.testScenario || '',
     createTime: time,
     updateTime: overrides.updateTime || time,
   }
@@ -185,6 +187,8 @@ export function fromProductionEvent(event = {}) {
     causeAnalysis: event.description,
     suggestions: event.suggestion,
     relatedEventId: event.id,
+    isDevTest: event.isDevTest === true,
+    testScenario: event.testScenario,
     createTime: event.createTime,
     updateTime: event.updateTime,
   })
@@ -290,7 +294,14 @@ export function createAlarmEvent(input = {}, sourceType) {
   if (!normalized.sourceEventId) return { created: false, reason: 'invalid_source', event: null }
   const events = readEvents()
   const duplicated = events.find((item) => item.sourceType === normalized.sourceType && item.sourceEventId === normalized.sourceEventId)
-  if (duplicated) return { created: false, reason: 'duplicate', event: clone(duplicated) }
+  if (duplicated) {
+    if (normalized.isDevTest && !duplicated.isDevTest) {
+      duplicated.isDevTest = true
+      duplicated.testScenario = normalized.testScenario
+      saveEvents(events)
+    }
+    return { created: false, reason: 'duplicate', event: clone(duplicated) }
+  }
   const time = normalized.createTime || nowText()
   normalized.id = createAlarmId(events)
   normalized.createTime = time

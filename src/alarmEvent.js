@@ -1,4 +1,4 @@
-import { closeProductionEvent, getProductionEvents, PRODUCTION_EVENT_CHANGED, setProductionEventRelatedAlarm } from './productionEvent.js'
+import { closeProductionEvent, getProductionEvents, PRODUCTION_EVENT_CHANGED, setProductionEventRelatedAlarm, submitProductionEventRecovery, updateProductionEventStatus } from './productionEvent.js'
 import { EQUIPMENT_EVENT_CHANGED, getEquipmentEvents } from './equipmentEvent.js'
 import { getMaintenanceOrders, MAINTENANCE_CHANGED } from './maintenance.js'
 import { equipmentList } from './mock/equipment.js'
@@ -453,8 +453,14 @@ export function appendAlarmAction(alarmId, action, operator, result = '') {
   if (!event) return { updated: false, reason: 'not_found', event: null }
   if (['closed', 'cancelled'].includes(event.status)) return { updated: false, reason: 'terminal_status', event: clone(event) }
   const record = typeof action === 'object'
-    ? { action: action.action || '处理记录', operator: action.operator || operator || '当前用户', result: action.result || result, time: action.time || nowText() }
-    : { action: action || '处理记录', operator: operator || '当前用户', result, time: nowText() }
+    ? {
+        action: 'handling_record',
+        measure: action.measure || action.action || '',
+        operator: action.operator || operator || '当前用户',
+        result: action.result || result,
+        time: action.time || nowText(),
+      }
+    : { action: 'handling_record', measure: action || '', operator: operator || '当前用户', result, time: nowText() }
   event.timeline.push(record)
   event.updateTime = record.time
   saveEvents(events)
@@ -514,8 +520,34 @@ export function closeAlarmEvent(alarmId, operator, result = '恢复验证通过�
     return { updated: false, reason: 'recovery_not_passed', event: clone(event) }
   }
   if (event.sourceType === 'production_event') {
-    const productionResult = closeProductionEvent(event.sourceEventId)
-    if (!productionResult.closed) return { updated: false, reason: 'source_event_close_failed', event: clone(event) }
+    let sourceEvent = getProductionEvents().find((item) => item.id === event.sourceEventId)
+    if (!sourceEvent) return { updated: false, reason: 'source_event_not_found', event: clone(event) }
+    if (sourceEvent.status === 'pending') {
+      const processingResult = updateProductionEventStatus(sourceEvent.id, 'processing')
+      if (!processingResult.updated) return { updated: false, reason: 'source_event_sync_failed', event: clone(event), sourceResult: processingResult }
+      sourceEvent = processingResult.event
+    }
+    if (sourceEvent.status === 'processing') {
+      const recoveryResult = submitProductionEventRecovery({
+        eventId: sourceEvent.id,
+        adjustmentId: `ALARM-RECOVERY-${event.id}`,
+        beforeValue: sourceEvent.currentValue,
+        afterValue: event.currentValue,
+        operator: operator || event.recovery?.operator || '当前用户',
+        reason: event.recovery?.description || result,
+        result: event.recovery?.description || result,
+        parameterStatus: 'normal',
+        verificationPassed: true,
+        executeTime: event.recovery?.time || nowText(),
+        relatedAlarmId: event.id,
+      })
+      if (!recoveryResult.updated) return { updated: false, reason: 'source_event_sync_failed', event: clone(event), sourceResult: recoveryResult }
+      sourceEvent = recoveryResult.event
+    }
+    if (sourceEvent.status !== 'closed') {
+      const productionResult = closeProductionEvent(event.sourceEventId)
+      if (!productionResult.closed) return { updated: false, reason: 'source_event_close_failed', event: clone(event), sourceResult: productionResult }
+    }
   }
   if (event.sourceType === 'quality_event') {
     const qualityResult = confirmQualityRecovery({ eventId: event.sourceEventId, operator, comment: result })

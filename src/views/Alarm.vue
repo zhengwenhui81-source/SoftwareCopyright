@@ -42,6 +42,7 @@ const actionLabels = {
   production_parameter_adjusted: '生产参数调整完成',
   recovery_verification: '系统恢复验证',
   quality_reinspection_completed: '质量复检完成',
+  handling_record: '保存处理记录',
   close: '关闭报警',
 }
 
@@ -76,6 +77,7 @@ const trendOption = computed(() => ({ color: ['#ef5b5b', '#f1aa45', '#359fe8'], 
 const hasProductionContext = computed(() => Boolean(selected.value?.batchId || selected.value?.processName || selected.value?.parameterName))
 const hasEquipmentContext = computed(() => Boolean(selected.value?.equipmentId || selected.value?.equipmentName || selected.value?.healthScore != null || selected.value?.failureProbability != null))
 const hasQualityContext = computed(() => selected.value?.sourceType === 'quality_event' && Boolean(selected.value?.qualityContext))
+const handlingRecords = computed(() => (selected.value?.timeline || []).filter((item) => item.action === 'handling_record'))
 
 function refreshAlarms(preferredId = selected.value?.id) {
   alarms.value = getAlarmEvents()
@@ -112,8 +114,14 @@ function handleStart() {
 }
 function handleAppendAction() {
   const form = actionForm.value
-  if (!form.action || !form.operator || !form.result) return ElMessage.warning('请完整填写处理措施、操作人和处理结果')
-  applyResult(appendAlarmAction(selected.value.id, form.action, form.operator, form.result), '处理记录已保存')
+  if (!form.action.trim() || !form.operator.trim() || !form.result.trim()) return ElMessage.warning('请完整填写处理措施、操作人和处理结果')
+  const result = appendAlarmAction(selected.value.id, {
+    measure: form.action.trim(),
+    operator: form.operator.trim(),
+    result: form.result.trim(),
+  })
+  applyResult(result, '处理记录已保存')
+  if (!result.updated) return
   actionForm.value.action = ''
   actionForm.value.result = ''
 }
@@ -126,7 +134,8 @@ function handleSubmitRecovery() {
 function handleRecoveryDecision() {
   const recovery = selected.value.recovery
   if (recovery?.verificationResult === 'passed') {
-    applyResult(closeAlarmEvent(selected.value.id, recovery.operator || '当前用户'), '恢复验证通过，报警已关闭')
+    const result = closeAlarmEvent(selected.value.id, recovery.operator || '当前用户')
+    applyResult(result, '恢复验证通过，报警已关闭')
     detailVisible.value = false
   } else {
     applyResult(returnAlarmToProcessing(selected.value.id, recovery?.operator || '当前用户', recovery?.description || '恢复验证未通过'), '验证未通过，已返回处理阶段')
@@ -189,7 +198,18 @@ onBeforeUnmount(() => {
 
         <template v-if="selected.relatedEventId || selected.relatedOrderId"><h4>关联对象</h4><el-descriptions :column="2" border><el-descriptions-item v-if="selected.relatedEventId" :label="selected.sourceType === 'production_event' ? '生产事件编号' : selected.sourceType === 'equipment_event' ? '设备事件编号' : selected.sourceType === 'quality_event' ? '质量事件编号' : '关联事件'">{{ selected.relatedEventId }}</el-descriptions-item><el-descriptions-item v-if="selected.relatedOrderId" label="关联维护工单">{{ selected.relatedOrderId }}</el-descriptions-item></el-descriptions></template>
 
-        <h4>处理时间线</h4><el-timeline class="event-timeline"><el-timeline-item v-for="(item, index) in selected.timeline" :key="`${item.time}-${index}`" :timestamp="item.time" placement="top"><b>{{ actionLabels[item.action] || item.action }}</b><span>{{ item.operator || '系统' }}</span><p v-if="item.result">{{ item.result }}</p></el-timeline-item></el-timeline>
+        <h4>处理时间线</h4><el-timeline class="event-timeline"><el-timeline-item v-for="(item, index) in selected.timeline" :key="`${item.time}-${index}`" :timestamp="item.time" placement="top"><b>{{ actionLabels[item.action] || item.action }}</b><span>{{ item.operator || '系统' }}</span><p v-if="item.measure">{{ item.measure }}</p><p v-if="item.result">{{ item.result }}</p></el-timeline-item></el-timeline>
+
+        <h4>已保存处理记录</h4>
+        <div v-if="handlingRecords.length" class="handling-history">
+          <article v-for="(item, index) in handlingRecords" :key="`${item.time}-${index}`">
+            <time>{{ item.time }}</time>
+            <p><b>处理措施：</b>{{ item.measure }}</p>
+            <p><b>操作人：</b>{{ item.operator }}</p>
+            <p><b>处理结果：</b>{{ item.result }}</p>
+          </article>
+        </div>
+        <el-empty v-else description="暂无已保存处理记录" :image-size="52" />
 
         <div v-if="selected.status === 'new'" class="operation-box"><h4>确认报警</h4><el-select v-model="assignOwner" placeholder="选择负责人" style="width:100%"><el-option label="李工（热工）" value="李工" /><el-option label="王工（轧制）" value="王工" /><el-option label="周工（自动化）" value="周工" /><el-option label="刘工（检测）" value="刘工" /></el-select><el-button type="warning" @click="handleAcknowledge">确认报警</el-button></div>
         <div v-else-if="selected.status === 'acknowledged'" class="operation-box"><el-button type="primary" @click="handleStart">开始处理</el-button></div>
@@ -204,4 +224,5 @@ onBeforeUnmount(() => {
 <style scoped>
 .alarm-page{color:#dcecf7}.page-header{display:flex;justify-content:space-between;align-items:center;padding:4px 2px 15px}.page-header p{margin:0 0 4px;color:#3d9ccb;font:10px Consolas;letter-spacing:2px}.page-header h2{margin:0;color:#edf8ff;font-size:21px}.live{color:#6f91a8;font-size:10px}.live i{display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#2bd398;box-shadow:0 0 8px #2bd398}.top-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:12px;margin-bottom:12px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.stats article{position:relative;min-height:118px;padding:20px;background:linear-gradient(145deg,#0d3453,#09263e);border:1px solid #224e6c;border-top:2px solid #31c8d8}.stats span{color:#7394aa;font-size:10px}.stats b{display:block;margin-top:10px;color:#e5f4fc;font:600 30px Consolas}.stats .el-icon{position:absolute;right:16px;bottom:18px;color:#245d7d;font-size:29px}.stats .red{border-top-color:#ef5b5b}.stats .red b{color:#ef6b6b}.stats .orange{border-top-color:#f1aa45}.stats .orange b{color:#f1aa45}.stats .blue{border-top-color:#359fe8}.stats .blue b{color:#4ab0ef}.trend,.table-panel{padding:13px 15px 4px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.trend header,.table-panel>header>div:first-child{display:flex;align-items:center;gap:8px}.trend header i,.table-panel header i{width:3px;height:15px;background:#2bb7ec}.trend h3,.table-panel h3{margin:0;color:#dceefa;font-size:13px}.table-panel{padding-bottom:14px}.table-panel>header{min-height:48px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid rgba(55,107,142,.35)}.table-panel header span{color:#49748e;font:9px Consolas}.filters{display:flex;gap:8px;width:560px}.filters .el-input{flex:1}.filters .el-select{width:125px}.alarm-table{--el-table-bg-color:#0a2942;--el-table-tr-bg-color:#0a2942;--el-table-row-hover-bg-color:#123d5b;--el-table-header-bg-color:#0d3451;--el-table-border-color:#204760;--el-table-text-color:#a9c1d0;--el-table-header-text-color:#7195ad;font-size:11px}.alarm-id{color:#43b8ed;font:11px Consolas}.alarm-banner{display:flex;justify-content:space-between;align-items:center;padding:15px 18px;margin-bottom:15px;background:#f4f7f9;border-left:4px solid #389fe0}.alarm-banner.critical{border-color:#ef5b5b}.alarm-banner.warning{border-color:#e6a23c}.alarm-banner small{color:#4585a9;font:10px Consolas}.alarm-banner h3{margin:5px 0;color:#293f51;font-size:15px}.alarm-banner p{margin:0;color:#82939f;font-size:10px}.banner-tags{display:flex;gap:8px}.alarm-page :deep(.el-dialog h4){margin:17px 0 9px;color:#354e61;font-size:13px}.analysis-box,.operation-box{padding:12px 15px;border:1px solid #d8e4eb;background:#f7fafc;color:#40596a;font-size:12px}.analysis-box p{margin:4px 0 9px}.analysis-box ul{margin:7px 0 0;padding-left:20px}.operation-box{margin-top:14px}.operation-box>.el-button{margin-top:12px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.event-timeline{max-height:240px;overflow:auto;padding-top:8px}.event-timeline span{margin-left:10px;color:#6e8797;font-size:11px}.event-timeline p{margin:5px 0;color:#526b7a;font-size:11px}@media(max-width:1150px){.top-grid{grid-template-columns:1fr}.stats article{min-height:90px}}@media(max-width:700px){.stats{grid-template-columns:repeat(2,1fr)}.table-panel>header{height:auto;flex-direction:column;gap:10px;padding-bottom:10px}.filters{width:100%}.form-grid{grid-template-columns:1fr}}
 .simulation-note{margin:7px 0 0;color:#6f8796;font-size:10px}
+.handling-history{display:grid;gap:9px}.handling-history article{padding:11px 13px;border:1px solid #d8e4eb;background:#f7fafc;color:#40596a}.handling-history time{display:block;margin-bottom:7px;color:#8296a3;font:10px Consolas}.handling-history p{margin:4px 0;font-size:11px;line-height:1.6}.handling-history b{color:#314d61}
 </style>

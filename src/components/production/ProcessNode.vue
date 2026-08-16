@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import * as Icons from '@element-plus/icons-vue'
+import { ArrowRight, ArrowRightBold } from '@element-plus/icons-vue'
 import { statusMeta } from '@/mock/production'
 
 const props = defineProps({ process: { type: Object, required: true }, index: { type: Number, required: true }, last: Boolean })

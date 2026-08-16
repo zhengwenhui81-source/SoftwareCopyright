@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Operation } from '@element-plus/icons-vue'
 import BatchProgress from '@/components/production/BatchProgress.vue'
 import ProcessNode from '@/components/production/ProcessNode.vue'
 import ProcessTrendChart from '@/components/production/ProcessTrendChart.vue'
@@ -13,6 +14,7 @@ import { analyzeParameterStatus, appendRuntimeParameterSample, getProcessParamet
 import { PROCESS_PARAMETER_CHANGED, processParameterRules } from '@/processParameter'
 import { closeProductionEvent, createProductionEvent, getProductionEvents, updateProductionEventStatus } from '@/productionEvent'
 import { createProductionAdjustment, executeProductionAdjustment } from '@/productionAdjustment'
+import { ALARM_EVENT_CHANGED, getAlarmEvents } from '@/alarmEvent'
 
 const productionPlans = ref(getProductionPlans())
 const batch = ref(getProductionBatch(productionSummary.batchNo))
@@ -36,7 +38,16 @@ const selectedProcess = ref(null)
 const detailVisible = ref(false)
 const simulationPaused = ref(Boolean(runtimeSnapshot?.simulationPaused))
 const currentPlan = computed(() => productionPlans.value.find((item) => item.id === batch.value?.planId) || productionPlans.value[0])
-const abnormalCount = computed(() => processes.value.filter((item) => item.status === 'abnormal' || item.runtimeAlarmState === 'current_abnormal').length)
+const abnormalCount = computed(() => processes.value.filter((item) => item.runtimeAlarmState === 'current_abnormal').length)
+const recoveryPendingCount = computed(() => processes.value.filter((item) => item.runtimeAlarmState === 'recovery_pending').length)
+const normalCount = computed(() => processes.value.length - abnormalCount.value - recoveryPendingCount.value)
+const productionStatus = computed(() => abnormalCount.value
+  ? { label: '异常', className: 'danger' }
+  : recoveryPendingCount.value
+    ? { label: '待确认', className: 'warning' }
+    : currentProcess.value
+      ? { label: '运行中', className: 'running-status' }
+      : { label: '正常', className: 'success' })
 const currentProcess = computed(() => processes.value.find((item) => item.baseStatus === 'running') || processes.value.find((item) => item.status === 'running' || item.status === 'abnormal'))
 const blockedProcess = computed(() => currentProcess.value?.runtimeAlarmState === 'current_abnormal' ? currentProcess.value : null)
 const blockedMessage = computed(() => blockedProcess.value
@@ -137,10 +148,22 @@ function persistRuntime(force = false) {
 }
 
 function syncProcessAlarmStates() {
-  const activeAlarms = getLinkedAlarms().filter((alarm) => alarm.batchNo === productionSummary.batchNo && alarm.status !== 'closed')
+  const allLinkedAlarms = getLinkedAlarms()
+  const allProductionEventAlarms = getAlarmEvents({ sourceType: 'production_event' })
+  const linkedAlarms = allLinkedAlarms.filter((alarm) => alarm.batchNo === productionSummary.batchNo && alarm.status !== 'closed')
+  const productionEventAlarms = allProductionEventAlarms
+    .filter((alarm) => alarm.batchId === productionSummary.batchNo && !['closed', 'cancelled'].includes(alarm.status))
+    .map((alarm) => ({
+      id: alarm.id, source: 'production-event', sourceType: alarm.sourceType, sourceEventId: alarm.sourceEventId,
+      batchNo: alarm.batchId, processId: alarm.processId, triggerProcess: alarm.processName,
+      parameterKey: alarm.parameterKey, triggerParameter: alarm.parameterName,
+      level: alarm.level, value: `${alarm.currentValue}${alarm.unit ? ` ${alarm.unit}` : ''}`,
+      threshold: alarm.threshold, status: alarm.status, time: alarm.createTime, eventKey: `production-event:${alarm.sourceEventId}`,
+    }))
+  const activeAlarms = [...linkedAlarms, ...productionEventAlarms]
   const severityRank = { critical: 4, high: 3, warning: 2, info: 1 }
   processes.value.forEach((process) => {
-    const processAlarms = activeAlarms.filter((item) => item.processId === process.id || item.eventKey?.split(':')[1] === process.id)
+    const processAlarms = activeAlarms.filter((item) => item.processId === process.id || item.triggerProcess === process.name || item.eventKey?.split(':')[1] === process.id)
     const manualAlarm = processAlarms.find((item) => item.source === 'production-manual')
     const latestRecord = getProcessParameters(batch.value?.batchId, process.name)
     const assessments = Object.entries(processParameterRules[process.name] || {}).flatMap(([key, rule]) => {
@@ -187,7 +210,51 @@ function syncProcessAlarmStates() {
       process.runtimeAlarmState = null
       process.alarmDetail = null
     }
+    if (import.meta.env.DEV && process.id === 'finishing') {
+      const linkedAlarmRows = allLinkedAlarms
+        .filter((alarm) => alarm.batchNo === productionSummary.batchNo)
+        .map(({ id, processId, parameterKey, status, source }) => ({ id, processId, parameterKey, status, source }))
+      const unifiedAlarmRows = allProductionEventAlarms
+        .filter((alarm) => alarm.batchId === productionSummary.batchNo)
+        .map(({ id, sourceType, sourceEventId, status, processId, parameterKey, title }) => ({ id, sourceType, sourceEventId, status, processId, parameterKey, title }))
+      const currentAbnormalRows = currentAbnormalDetails.map((item) => ({
+        parameterKey: item.key, parameterName: item.rule.parameterName, currentValue: item.value,
+        min: item.rule.min, max: item.rule.max, alarmId: item.alarm?.id || '', alarmStatus: item.alarm?.status || '',
+      }))
+      const recoveryPendingRows = recoveryPendingDetails.map((item) => ({
+        parameterKey: item.key, parameterName: item.rule.parameterName, currentValue: item.value,
+        min: item.rule.min, max: item.rule.max, alarmId: item.alarm?.id || '', alarmStatus: item.alarm?.status || '',
+        source: item.alarm?.source || '', sourceType: item.alarm?.sourceType || '',
+        sourceEventId: item.alarm?.sourceEventId || '',
+      }))
+
+      console.debug('[Production debug] current batchNo', productionSummary.batchNo)
+      console.debug('[Production debug] plate-monitor-linked-alarms (current batch, all statuses)')
+      console.table(linkedAlarmRows)
+      console.debug('[Production debug] plate-monitor-linked-alarms (status !== closed)')
+      console.table(linkedAlarmRows.filter((alarm) => alarm.status !== 'closed'))
+      console.debug('[Production debug] thick_plate_alarm_events / production_event (current batch, all statuses)')
+      console.table(unifiedAlarmRows)
+      console.debug('[Production debug] thick_plate_alarm_events / production_event (status !== closed/cancelled)')
+      console.table(unifiedAlarmRows.filter((alarm) => !['closed', 'cancelled'].includes(alarm.status)))
+      console.debug('[Production debug] finishing currentAbnormalDetails')
+      console.table(currentAbnormalRows)
+      console.debug('[Production debug] finishing recoveryPendingDetails')
+      console.table(recoveryPendingRows)
+      console.debug('[Production debug] finishing', {
+        currentAbnormalDetails: currentAbnormalRows,
+        recoveryPendingDetails: recoveryPendingRows,
+        runtimeAlarmState: process.runtimeAlarmState,
+        alarmDetails: process.alarmDetails,
+      })
+      console.debug('[Production debug] finishing alarmDetails')
+      console.table(process.alarmDetails)
+    }
   })
+  if (import.meta.env.DEV) {
+    console.debug('[Production] active production risks', activeAlarms.map(({ id, source, sourceType, sourceEventId, processId, parameterKey, triggerParameter, value, threshold, status }) => ({ id, source, sourceType, sourceEventId, processId, parameterKey, triggerParameter, value, threshold, status })))
+    console.debug('[Production] process runtime states', processes.value.map(({ id, name, baseStatus, runtimeAlarmState, alarmDetails }) => ({ id, name, baseStatus, runtimeAlarmState, alarmDetails, alarmDetailCount: alarmDetails?.length || 0 })))
+  }
 }
 
 function reportException() {
@@ -274,6 +341,8 @@ function handleParameterChanged(event) {
 window.addEventListener(PROCESS_PARAMETER_CHANGED, handleParameterChanged)
 const handleLinkedAlarmChanged = () => syncProcessAlarmStates()
 window.addEventListener(LINKED_ALARM_CHANGED, handleLinkedAlarmChanged)
+const handleUnifiedAlarmChanged = () => syncProcessAlarmStates()
+window.addEventListener(ALARM_EVENT_CHANGED, handleUnifiedAlarmChanged)
 
 function updateProduction() {
   if (simulationPaused.value) return
@@ -332,6 +401,7 @@ onBeforeUnmount(() => {
   window.clearInterval(timer)
   window.removeEventListener(PROCESS_PARAMETER_CHANGED, handleParameterChanged)
   window.removeEventListener(LINKED_ALARM_CHANGED, handleLinkedAlarmChanged)
+  window.removeEventListener(ALARM_EVENT_CHANGED, handleUnifiedAlarmChanged)
 })
 </script>
 
@@ -347,14 +417,14 @@ onBeforeUnmount(() => {
 
     <section class="status-strip">
       <div><span>当前工序</span><strong>{{ currentProcess?.name || '全部完成' }}</strong></div>
-      <div><span>正常节点</span><strong class="success">{{ processes.length - abnormalCount }}</strong></div>
+      <div><span>正常节点</span><strong class="success">{{ normalCount }}</strong></div>
       <div><span>异常节点</span><strong :class="{ danger: abnormalCount }">{{ abnormalCount }}</strong></div>
       <div><span>生产节拍</span><strong>4.8 <small>min/块</small></strong></div>
-      <div><span>产线状态</span><strong class="success">稳定</strong></div>
+      <div><span>产线状态</span><strong :class="productionStatus.className">{{ productionStatus.label }}</strong></div>
     </section>
 
     <section class="flow-panel">
-      <header><div><i></i><h3>生产工艺流程</h3><span>PROCESS FLOW MONITORING</span></div><div class="legend"><span><i class="done"></i>已完成</span><span><i class="active"></i>运行中</span><span><i class="wait"></i>待运行</span><span><i class="error"></i>异常</span></div></header>
+      <header><div><i></i><h3>生产工艺流程</h3><span>PROCESS FLOW MONITORING</span></div><div class="legend"><span><i class="done"></i>已完成</span><span><i class="active"></i>运行中</span><span><i class="wait"></i>待运行</span><span><i class="recovery"></i>待恢复确认</span><span><i class="error"></i>异常</span></div></header>
       <el-alert v-if="blockedProcess" :title="blockedMessage" type="error" :closable="false" show-icon />
       <div class="process-grid"><ProcessNode v-for="(process,index) in processes" :key="process.id" :process="process" :index="index" :last="index === processes.length - 1" @select="openDetail" /></div>
     </section>
@@ -401,6 +471,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.production-page{color:#d9eaf6}.production-plan,.batch-progress{margin-bottom:12px}.page-header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:4px 2px 15px}.page-header p{margin:0 0 4px;color:#3b9acb;font:10px Consolas;letter-spacing:2px}.page-header h2{margin:0;color:#edf8ff;font-size:21px}.header-actions{display:flex;align-items:center;gap:15px}.header-actions>span{color:#7899b1;font-size:11px}.header-actions>span i{display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#29d394;box-shadow:0 0 8px #29d394}.status-strip{display:grid;grid-template-columns:repeat(5,1fr);margin-bottom:12px;background:#092840;border:1px solid #1e4865}.status-strip>div{display:flex;align-items:center;justify-content:center;gap:14px;min-height:58px;border-right:1px solid #1e4865}.status-strip>div:last-child{border:0}.status-strip span{color:#698aa2;font-size:11px}.status-strip strong{color:#dbeaf3;font:600 17px Consolas,"Microsoft YaHei"}.status-strip small{font-size:10px;color:#6d91a9}.success{color:#2dd298!important}.danger{color:#ff6262!important}.flow-panel{padding:16px 18px 22px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.flow-panel>header{display:flex;align-items:center;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid rgba(55,107,142,.35)}.flow-panel>header>div{display:flex;align-items:center;gap:9px}.flow-panel>header>div>i{width:3px;height:16px;background:#2cb9ed;box-shadow:0 0 8px #2cb9ed}.flow-panel h3{margin:0;color:#dceefa;font-size:14px}.flow-panel header>div>span{color:#3f6d89;font:9px Consolas;letter-spacing:1px}.legend span{display:flex;align-items:center;gap:5px!important;color:#6f91aa!important;font:10px "Microsoft YaHei"!important;letter-spacing:0!important}.legend i{width:7px!important;height:7px!important;border-radius:50%;box-shadow:none!important}.done{background:#29c88d!important}.active{background:#2cbee9!important}.wait{background:#607b8e!important}.error{background:#ec5959!important}.process-grid{display:grid;grid-template-columns:repeat(8,minmax(140px,1fr));gap:18px;padding-top:22px}.parameter-panel{margin-top:12px;padding:0 16px 10px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.parameter-panel>header{display:flex;align-items:center;justify-content:space-between;height:47px;border-bottom:1px solid rgba(55,107,142,.35)}.parameter-panel>header>div:first-child{display:flex;align-items:center;gap:8px}.parameter-panel header i{width:3px;height:16px;background:#2cb9ed}.parameter-panel h3{margin:0;font-size:14px}.parameter-panel header span{color:#49748e;font:9px Consolas}.parameter-process{color:#6d8fa5;font-size:10px}.parameter-process b{margin:0 8px;color:#4cc4ef;font-size:13px}.parameter-process small{color:#4d7289;font:9px Consolas}.parameter-analysis{display:grid;grid-template-columns:360px 1fr;gap:12px;padding-top:12px}.parameter-cards{display:grid;gap:10px}.parameter-cards article{padding:13px 15px;background:#09263e;border-left:3px solid #2bd398}.parameter-cards article.level-high{border-color:#ef6262}.parameter-cards article.level-low{border-color:#ffad45}.parameter-cards article>div{display:flex;align-items:center;justify-content:space-between}.parameter-cards span{color:#80a1b5;font-size:11px}.parameter-cards strong{display:block;margin-top:7px;color:#dcecf7;font:600 24px Consolas}.parameter-cards strong small{margin-left:4px;color:#6d91a8;font-size:10px}.parameter-cards p{margin:5px 0;color:#66899f;font-size:9px}.parameter-cards em{color:#50768d;font-size:9px;font-style:normal}.parameter-panel>footer{margin-top:8px;color:#496e84;text-align:right;font-size:8px}.dialog-title{display:flex;align-items:center;gap:12px}.dialog-title>div{flex:1}.dialog-title small{color:#5999bf;font:9px Consolas;letter-spacing:2px}.dialog-title h3{margin:3px 0 0;color:#243a50;font-size:18px}.dialog-icon{width:38px;height:38px;display:grid;place-items:center;color:#fff;background:#238ed0;border-radius:4px;font-size:20px}.section-title{margin:20px 0 10px;padding-left:9px;color:#314b61;font-size:13px;border-left:3px solid #2699d6}.parameter-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.parameter-grid>div{display:flex;flex-direction:column;padding:13px;background:#f2f7fa;border:1px solid #dce8ef}.parameter-grid span{color:#6e8291;font-size:11px}.parameter-grid strong{margin:5px 0;color:#166fa5;font:600 22px Consolas}.parameter-grid small{margin-left:4px;font:11px "Microsoft YaHei"}.parameter-grid em{color:#99a7b1;font-size:9px;font-style:normal}.description{margin:0;padding:12px;color:#5c7182;font-size:12px;line-height:1.7;background:#f6f8fa}.process-dialog :deep(.el-dialog__body){padding-top:10px}@media(max-width:1500px){.process-grid{grid-template-columns:repeat(4,1fr)}}@media(max-width:900px){.process-grid{grid-template-columns:repeat(2,1fr)}.status-strip{grid-template-columns:repeat(2,1fr)}.parameter-analysis{grid-template-columns:1fr}.page-header,.flow-panel>header{align-items:flex-start;flex-direction:column}}
-.parameter-process{display:flex;align-items:center}.parameter-process .el-select{width:120px;margin:0 8px}
+.production-page{color:#d9eaf6}.production-plan,.batch-progress{margin-bottom:12px}.page-header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:4px 2px 15px}.page-header p{margin:0 0 4px;color:#3b9acb;font:10px Consolas;letter-spacing:2px}.page-header h2{margin:0;color:#edf8ff;font-size:21px}.header-actions{display:flex;align-items:center;gap:15px}.header-actions>span{color:#7899b1;font-size:11px}.header-actions>span i{display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#29d394;box-shadow:0 0 8px #29d394}.status-strip{display:grid;grid-template-columns:repeat(5,1fr);margin-bottom:12px;background:#092840;border:1px solid #1e4865}.status-strip>div{display:flex;align-items:center;justify-content:center;gap:14px;min-height:58px;border-right:1px solid #1e4865}.status-strip>div:last-child{border:0}.status-strip span{color:#698aa2;font-size:11px}.status-strip strong{color:#dbeaf3;font:600 17px Consolas,"Microsoft YaHei"}.status-strip small{font-size:10px;color:#6d91a9}.success{color:#2dd298!important}.danger{color:#ff6262!important}.flow-panel{padding:16px 18px 22px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.flow-panel>header{display:flex;align-items:center;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid rgba(55,107,142,.35)}.flow-panel>header>div{display:flex;align-items:center;gap:9px}.flow-panel>header>div>i{width:3px;height:16px;background:#2cb9ed;box-shadow:0 0 8px #2cb9ed}.flow-panel h3{margin:0;color:#dceefa;font-size:14px}.flow-panel header>div>span{color:#3f6d89;font:9px Consolas;letter-spacing:1px}.legend span{display:flex;align-items:center;gap:5px!important;color:#6f91aa!important;font:10px "Microsoft YaHei"!important;letter-spacing:0!important}.legend i{width:7px!important;height:7px!important;border-radius:50%;box-shadow:none!important}.done{background:#29c88d!important}.active{background:#2cbee9!important}.wait{background:#607b8e!important}.recovery{background:#e6a23c!important}.error{background:#ec5959!important}.process-grid{display:grid;grid-template-columns:repeat(8,minmax(140px,1fr));gap:18px;padding-top:22px}.parameter-panel{margin-top:12px;padding:0 16px 10px;background:linear-gradient(145deg,#0a2b46,#071f34);border:1px solid #204c6c}.parameter-panel>header{display:flex;align-items:center;justify-content:space-between;height:47px;border-bottom:1px solid rgba(55,107,142,.35)}.parameter-panel>header>div:first-child{display:flex;align-items:center;gap:8px}.parameter-panel header i{width:3px;height:16px;background:#2cb9ed}.parameter-panel h3{margin:0;font-size:14px}.parameter-panel header span{color:#49748e;font:9px Consolas}.parameter-process{color:#6d8fa5;font-size:10px}.parameter-process b{margin:0 8px;color:#4cc4ef;font-size:13px}.parameter-process small{color:#4d7289;font:9px Consolas}.parameter-analysis{display:grid;grid-template-columns:360px 1fr;gap:12px;padding-top:12px}.parameter-cards{display:grid;gap:10px}.parameter-cards article{padding:13px 15px;background:#09263e;border-left:3px solid #2bd398}.parameter-cards article.level-high{border-color:#ef6262}.parameter-cards article.level-low{border-color:#ffad45}.parameter-cards article>div{display:flex;align-items:center;justify-content:space-between}.parameter-cards span{color:#80a1b5;font-size:11px}.parameter-cards strong{display:block;margin-top:7px;color:#dcecf7;font:600 24px Consolas}.parameter-cards strong small{margin-left:4px;color:#6d91a8;font-size:10px}.parameter-cards p{margin:5px 0;color:#66899f;font-size:9px}.parameter-cards em{color:#50768d;font-size:9px;font-style:normal}.parameter-panel>footer{margin-top:8px;color:#496e84;text-align:right;font-size:8px}.dialog-title{display:flex;align-items:center;gap:12px}.dialog-title>div{flex:1}.dialog-title small{color:#5999bf;font:9px Consolas;letter-spacing:2px}.dialog-title h3{margin:3px 0 0;color:#243a50;font-size:18px}.dialog-icon{width:38px;height:38px;display:grid;place-items:center;color:#fff;background:#238ed0;border-radius:4px;font-size:20px}.section-title{margin:20px 0 10px;padding-left:9px;color:#314b61;font-size:13px;border-left:3px solid #2699d6}.parameter-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.parameter-grid>div{display:flex;flex-direction:column;padding:13px;background:#f2f7fa;border:1px solid #dce8ef}.parameter-grid span{color:#6e8291;font-size:11px}.parameter-grid strong{margin:5px 0;color:#166fa5;font:600 22px Consolas}.parameter-grid small{margin-left:4px;font:11px "Microsoft YaHei"}.parameter-grid em{color:#99a7b1;font-size:9px;font-style:normal}.description{margin:0;padding:12px;color:#5c7182;font-size:12px;line-height:1.7;background:#f6f8fa}.process-dialog :deep(.el-dialog__body){padding-top:10px}@media(max-width:1500px){.process-grid{grid-template-columns:repeat(4,1fr)}}@media(max-width:900px){.process-grid{grid-template-columns:repeat(2,1fr)}.status-strip{grid-template-columns:repeat(2,1fr)}.parameter-analysis{grid-template-columns:1fr}.page-header,.flow-panel>header{align-items:flex-start;flex-direction:column}}
+.parameter-process{display:flex;align-items:center}.parameter-process .el-select{width:120px;margin:0 8px}.warning{color:#e6a23c!important}.running-status{color:#2cbee9!important}
 </style>

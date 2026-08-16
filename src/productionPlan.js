@@ -87,3 +87,54 @@ export function updateProductionRuntime(batchId, runtime = {}) {
   batch.runtime = { currentProcessId: runtime.currentProcessId || '', currentProcessIndex: Number.isInteger(runtime.currentProcessIndex) ? runtime.currentProcessIndex : -1, processProgress: clone(runtime.processProgress || {}), baseStatuses: clone(runtime.baseStatuses || {}), simulationPaused: Boolean(runtime.simulationPaused), updateTime: nowText() }
   saveData(data); return clone(batch.runtime)
 }
+
+function createBatchId(previousBatchId, batches) {
+  const matched = String(previousBatchId || '').match(/^(.*-)(\d+)$/)
+  if (!matched) return `PL-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-001`
+  const [, prefix, suffix] = matched
+  const width = suffix.length
+  const max = batches
+    .filter((item) => String(item.batchId || '').startsWith(prefix))
+    .map((item) => Number(String(item.batchId).slice(prefix.length)))
+    .filter(Number.isFinite)
+    .reduce((value, current) => Math.max(value, current), Number(suffix))
+  return `${prefix}${String(max + 1).padStart(width, '0')}`
+}
+
+/** 当前批次完成但订单仍有剩余数量时，创建下一生产批次。 */
+export function createNextProductionBatch(batchId) {
+  const data = readData()
+  const previous = data.batches.find((item) => item.batchId === batchId)
+  const plan = data.plans.find((item) => item.id === previous?.planId)
+  if (!previous || !plan) return { created: false, reason: 'not_found', batch: null }
+  if (previous.processStatus !== 'completed' && Number(previous.progress) < 100) return { created: false, reason: 'previous_not_completed', batch: clone(previous) }
+  const remaining = Math.max(0, Number(plan.quantity || 0) - Number(plan.completed || 0))
+  if (!remaining) return { created: false, reason: 'plan_completed', batch: clone(previous) }
+  const running = data.batches.find((item) => item.planId === plan.id && ['running', 'paused'].includes(item.processStatus))
+  if (running) return { created: false, reason: 'running_batch_exists', batch: clone(running) }
+  const next = {
+    batchId: createBatchId(previous.batchId, data.batches), planId: plan.id, steelGrade: plan.steelGrade,
+    specification: plan.specification, batchQuantity: remaining, currentProcess: '炼钢与连铸', progress: 0,
+    startTime: nowText(), operators: previous.operators || '张工 / 赵工', processStatus: 'running',
+  }
+  data.batches.push(next)
+  saveData(data)
+  return { created: true, reason: 'created', batch: clone(next), remaining }
+}
+
+/** 仅在一个批次首次完成时累计订单数量，刷新或重复调用不会重复累计。 */
+export function completeProductionBatch(batchId) {
+  const data = readData()
+  const batch = data.batches.find((item) => item.batchId === batchId)
+  const plan = data.plans.find((item) => item.id === batch?.planId)
+  if (!batch || !plan) return { completed: false, reason: 'not_found', batch: null, plan: null }
+  if (batch.processStatus !== 'completed' && Number(batch.progress) < 100) return { completed: false, reason: 'batch_not_completed', batch: clone(batch), plan: clone(plan) }
+  if (batch.completionRecorded) return { completed: true, reason: 'already_recorded', batch: clone(batch), plan: clone(plan) }
+  const quantity = Math.max(0, Number(batch.batchQuantity || 0))
+  plan.completed = Math.min(Number(plan.quantity || 0), Number(plan.completed || 0) + quantity)
+  plan.status = Number(plan.completed) >= Number(plan.quantity) ? '已完成' : '生产中'
+  batch.completionRecorded = true
+  batch.completedTime = batch.completedTime || nowText()
+  saveData(data)
+  return { completed: true, reason: 'recorded', batch: clone(batch), plan: clone(plan) }
+}

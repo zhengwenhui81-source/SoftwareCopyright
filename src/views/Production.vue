@@ -7,9 +7,9 @@ import ProcessNode from '@/components/production/ProcessNode.vue'
 import ProcessTrendChart from '@/components/production/ProcessTrendChart.vue'
 import ProductionPlanCard from '@/components/production/ProductionPlanCard.vue'
 import ProductionEventTable from '@/components/production/ProductionEventTable.vue'
-import { initialProductionProcesses, productionSummary, statusMeta, fluctuateProcessValue } from '@/mock/production'
+import { initialProductionProcesses, statusMeta, fluctuateProcessValue } from '@/mock/production'
 import { createManualProcessAlarm, evaluateProcessAlarms, getLinkedAlarms, LINKED_ALARM_CHANGED } from '@/industrialAlarmLink'
-import { getProductionBatch, getProductionPlans, getProductionRuntime, updateBatchProgress, updateProductionRuntime } from '@/productionPlan'
+import { completeProductionBatch, createNextProductionBatch, getProductionBatch, getProductionPlans, getProductionRuntime, updateBatchProgress, updateProductionRuntime } from '@/productionPlan'
 import { analyzeParameterStatus, appendRuntimeParameterSample, getProcessParameters } from '@/processParameter'
 import { PROCESS_PARAMETER_CHANGED, processParameterRules } from '@/processParameter'
 import { closeProductionEvent, createProductionEvent, getProductionEvents, updateProductionEventStatus } from '@/productionEvent'
@@ -17,13 +17,16 @@ import { createProductionAdjustment, executeProductionAdjustment } from '@/produ
 import { ALARM_EVENT_CHANGED, getAlarmEvents } from '@/alarmEvent'
 
 const productionPlans = ref(getProductionPlans())
-const batch = ref(getProductionBatch(productionSummary.batchNo))
-const runtimeSnapshot = getProductionRuntime(batch.value.batchId, initialProductionProcesses.map(({ id, name, status, progress }) => ({ id, name, status, progress })))
+const batch = ref(getProductionBatch())
+const runtimeSnapshot = ref(getProductionRuntime(batch.value.batchId, initialProductionProcesses.map(({ id, name, status, progress }) => ({ id, name, status, progress }))))
 function createRuntimeProcesses() {
   return initialProductionProcesses.map((item) => {
-    const status = runtimeSnapshot?.baseStatuses?.[item.id] || item.status
-    const process = { ...item, status, baseStatus: status, progress: runtimeSnapshot?.processProgress?.[item.id] ?? item.progress, parameters: item.parameters.map((parameter) => ({ ...parameter })) }
-    const latest = getProcessParameters(batch.value.batchId, item.name)
+    const status = runtimeSnapshot.value?.baseStatuses?.[item.id] || item.status
+    const process = { ...item, status, baseStatus: status, progress: runtimeSnapshot.value?.processProgress?.[item.id] ?? item.progress, parameters: item.parameters.map((parameter) => ({ ...parameter })) }
+    // 待运行工序尚未采集本批次参数，保留基准值，避免带入上一批次末次样本。
+    const latest = ['running', 'completed'].includes(status)
+      ? getProcessParameters(batch.value.batchId, item.name)
+      : null
     Object.entries(processParameterRules[item.name] || {}).forEach(([key, rule]) => {
       const parameter = process.parameters.find((candidate) => candidate.key === key || rule.aliases.includes(candidate.name))
       if (parameter && latest?.parameters?.[key] != null) parameter.value = latest.parameters[key]
@@ -36,8 +39,12 @@ function createRuntimeProcesses() {
 const processes = ref(createRuntimeProcesses())
 const selectedProcess = ref(null)
 const detailVisible = ref(false)
-const simulationPaused = ref(Boolean(runtimeSnapshot?.simulationPaused))
+const simulationPaused = ref(Boolean(runtimeSnapshot.value?.simulationPaused))
 const currentPlan = computed(() => productionPlans.value.find((item) => item.id === batch.value?.planId) || productionPlans.value[0])
+const batchCompleted = computed(() => batch.value?.processStatus === 'completed' || overallProgress.value >= 100)
+const remainingQuantity = computed(() => Math.max(0, Number(currentPlan.value?.quantity || 0) - Number(currentPlan.value?.completed || 0)))
+const canStartNextBatch = computed(() => batchCompleted.value && remainingQuantity.value > 0)
+const orderCompleted = computed(() => Number(currentPlan.value?.completed || 0) >= Number(currentPlan.value?.quantity || 0))
 const abnormalCount = computed(() => processes.value.filter((item) => item.runtimeAlarmState === 'current_abnormal').length)
 const recoveryPendingCount = computed(() => processes.value.filter((item) => item.runtimeAlarmState === 'recovery_pending').length)
 const normalCount = computed(() => processes.value.length - abnormalCount.value - recoveryPendingCount.value)
@@ -59,7 +66,12 @@ const selectedAnalysisProcessId = ref('')
 const analysisProcessManuallySelected = ref(false)
 const selectedAnalysisProcess = computed(() => analysisProcessOptions.value.find((item) => item.id === selectedAnalysisProcessId.value) || null)
 const parameterRevision = ref(0)
-const parameterRecord = computed(() => { parameterRevision.value; return getProcessParameters(batch.value?.batchId, selectedAnalysisProcess.value?.name) })
+const parameterRecord = computed(() => {
+  parameterRevision.value
+  const process = selectedAnalysisProcess.value
+  if (!process || process.baseStatus === 'waiting') return null
+  return getProcessParameters(batch.value?.batchId, process.name)
+})
 const parameterStatuses = computed(() => analyzeParameterStatus(parameterRecord.value))
 const parameterStatusMeta = {
   normal: { label: '正常', type: 'success' },
@@ -92,6 +104,7 @@ function refreshProductionEvents() {
 }
 
 function syncProductionEvents() {
+  if (selectedAnalysisProcess.value?.baseStatus === 'waiting') return refreshProductionEvents()
   if (!parameterRecord.value) return refreshProductionEvents()
   parameterStatuses.value.filter((item) => item.status !== '正常').forEach((item) => {
     createProductionEvent({
@@ -133,6 +146,29 @@ function toggleSimulation() {
   ElMessage.info(simulationPaused.value ? '生产数据模拟已暂停' : '生产数据模拟已恢复')
 }
 
+function startNextBatch() {
+  const result = createNextProductionBatch(batch.value?.batchId)
+  if (!result.created) return ElMessage.warning(result.reason === 'plan_completed' ? '当前订单已完成，不能创建新批次' : '下一批次暂无法创建')
+  batch.value = result.batch
+  productionPlans.value = getProductionPlans()
+  const initialRuntime = {
+    currentProcessId: initialProductionProcesses[0]?.id || '', currentProcessIndex: 0,
+    processProgress: Object.fromEntries(initialProductionProcesses.map((item) => [item.id, 0])),
+    baseStatuses: Object.fromEntries(initialProductionProcesses.map((item, index) => [item.id, index === 0 ? 'running' : 'waiting'])),
+    simulationPaused: false,
+  }
+  runtimeSnapshot.value = updateProductionRuntime(batch.value.batchId, initialRuntime)
+  processes.value = createRuntimeProcesses()
+  simulationPaused.value = false
+  selectedProcess.value = null
+  selectedAnalysisProcessId.value = ''
+  analysisProcessManuallySelected.value = false
+  refreshProductionEvents()
+  syncProcessAlarmStates()
+  ensureAnalysisProcessSelection()
+  ElMessage.success(`已开始新批次 ${batch.value.batchId}，本批计划 ${result.remaining} 块`)
+}
+
 let lastRuntimeSave = 0
 function persistRuntime(force = false) {
   const now = Date.now()
@@ -150,9 +186,9 @@ function persistRuntime(force = false) {
 function syncProcessAlarmStates() {
   const allLinkedAlarms = getLinkedAlarms()
   const allProductionEventAlarms = getAlarmEvents({ sourceType: 'production_event' })
-  const linkedAlarms = allLinkedAlarms.filter((alarm) => alarm.batchNo === productionSummary.batchNo && alarm.status !== 'closed')
+  const linkedAlarms = allLinkedAlarms.filter((alarm) => alarm.batchNo === batch.value?.batchId && alarm.status !== 'closed')
   const productionEventAlarms = allProductionEventAlarms
-    .filter((alarm) => alarm.batchId === productionSummary.batchNo && !['closed', 'cancelled'].includes(alarm.status))
+    .filter((alarm) => alarm.batchId === batch.value?.batchId && !['closed', 'cancelled'].includes(alarm.status))
     .map((alarm) => ({
       id: alarm.id, source: 'production-event', sourceType: alarm.sourceType, sourceEventId: alarm.sourceEventId,
       batchNo: alarm.batchId, processId: alarm.processId, triggerProcess: alarm.processName,
@@ -163,6 +199,13 @@ function syncProcessAlarmStates() {
   const activeAlarms = [...linkedAlarms, ...productionEventAlarms]
   const severityRank = { critical: 4, high: 3, warning: 2, info: 1 }
   processes.value.forEach((process) => {
+    // 风险状态只属于已启动的当前批次工序；待运行工序不能继承历史报警或参数异常。
+    if (process.baseStatus === 'waiting') {
+      process.runtimeAlarmState = null
+      process.alarmDetail = null
+      process.alarmDetails = []
+      return
+    }
     const processAlarms = activeAlarms.filter((item) => item.processId === process.id || item.triggerProcess === process.name || item.eventKey?.split(':')[1] === process.id)
     const manualAlarm = processAlarms.find((item) => item.source === 'production-manual')
     const latestRecord = getProcessParameters(batch.value?.batchId, process.name)
@@ -212,10 +255,10 @@ function syncProcessAlarmStates() {
     }
     if (import.meta.env.DEV && process.id === 'finishing') {
       const linkedAlarmRows = allLinkedAlarms
-        .filter((alarm) => alarm.batchNo === productionSummary.batchNo)
+        .filter((alarm) => alarm.batchNo === batch.value?.batchId)
         .map(({ id, processId, parameterKey, status, source }) => ({ id, processId, parameterKey, status, source }))
       const unifiedAlarmRows = allProductionEventAlarms
-        .filter((alarm) => alarm.batchId === productionSummary.batchNo)
+        .filter((alarm) => alarm.batchId === batch.value?.batchId)
         .map(({ id, sourceType, sourceEventId, status, processId, parameterKey, title }) => ({ id, sourceType, sourceEventId, status, processId, parameterKey, title }))
       const currentAbnormalRows = currentAbnormalDetails.map((item) => ({
         parameterKey: item.key, parameterName: item.rule.parameterName, currentValue: item.value,
@@ -228,7 +271,7 @@ function syncProcessAlarmStates() {
         sourceEventId: item.alarm?.sourceEventId || '',
       }))
 
-      console.debug('[Production debug] current batchNo', productionSummary.batchNo)
+      console.debug('[Production debug] current batchNo', batch.value?.batchId)
       console.debug('[Production debug] plate-monitor-linked-alarms (current batch, all statuses)')
       console.table(linkedAlarmRows)
       console.debug('[Production debug] plate-monitor-linked-alarms (status !== closed)')
@@ -263,7 +306,7 @@ function reportException() {
     if (process) {
       process.status = 'abnormal'
       process.manualException = true
-      createManualProcessAlarm(process, productionSummary.batchNo)
+      createManualProcessAlarm(process, batch.value?.batchId)
       syncProcessAlarmStates()
     }
     ElMessage.success('异常已上报至报警中心')
@@ -318,7 +361,7 @@ function handleParameterChanged(event) {
       const runtimeParameter = process.parameters.find((item) => item.key === key || runtimeRule.aliases.includes(item.name) || item.name === aliases[runtimeRule.name])
       if (runtimeParameter && detail.parameters[key] != null) runtimeParameter.value = detail.parameters[key]
     })
-    if (process.baseStatus === 'running') evaluateProcessAlarms([process], productionSummary.batchNo)
+    if (process.baseStatus === 'running') evaluateProcessAlarms([process], batch.value?.batchId)
     syncProcessAlarmStates()
     return
   }
@@ -334,7 +377,7 @@ function handleParameterChanged(event) {
     if (process.status === 'abnormal') process.status = 'running'
     process.alarmDetail = null
   }
-  if (process.baseStatus === 'running') evaluateProcessAlarms([process], productionSummary.batchNo)
+  if (process.baseStatus === 'running') evaluateProcessAlarms([process], batch.value?.batchId)
   syncProcessAlarmStates()
 }
 
@@ -365,7 +408,7 @@ function updateProduction() {
     return parameter && Number.isFinite(Number(parameter.value)) ? [[key, Number(parameter.value)]] : []
   }))
   if (Object.keys(runtimeParameters).length) appendRuntimeParameterSample({ batchId: batch.value.batchId, process: running.name, processId: running.id, parameters: runtimeParameters, source: 'simulation' })
-  const linkedAlarms = evaluateProcessAlarms([running], productionSummary.batchNo)
+  const linkedAlarms = evaluateProcessAlarms([running], batch.value?.batchId)
   syncProcessAlarmStates()
   if (linkedAlarms.length) ElMessage.warning(`检测到${linkedAlarms[0].reason}，已自动生成报警`)
   if (running.runtimeAlarmState === 'current_abnormal') {
@@ -389,11 +432,15 @@ function updateProduction() {
     persistRuntime(true)
   }
   batch.value = updateBatchProgress(batch.value.batchId, overallProgress.value, currentProcess.value?.name || '全部完成', currentProcess.value ? 'running' : 'completed')
+  if (batch.value?.processStatus === 'completed') {
+    const completion = completeProductionBatch(batch.value.batchId)
+    if (completion.completed) productionPlans.value = getProductionPlans()
+  }
   persistRuntime()
 }
 
 const timer = window.setInterval(updateProduction, 3000)
-if (currentProcess.value) evaluateProcessAlarms([currentProcess.value], productionSummary.batchNo)
+if (currentProcess.value) evaluateProcessAlarms([currentProcess.value], batch.value?.batchId)
 syncProcessAlarmStates()
 ensureAnalysisProcessSelection()
 onBeforeUnmount(() => {
@@ -409,7 +456,7 @@ onBeforeUnmount(() => {
   <div class="production-page">
     <section class="page-header">
       <div><p>THICK PLATE PRODUCTION DIGITAL TWIN</p><h2>厚板生产全过程可视化监控</h2></div>
-      <div class="header-actions"><span><i></i>模拟数据运行</span><el-button type="primary" plain size="small" @click="toggleSimulation">{{ simulationPaused ? '恢复模拟' : '暂停模拟' }}</el-button></div>
+      <div class="header-actions"><span><i></i>模拟数据运行</span><el-button v-if="canStartNextBatch" type="success" plain size="small" @click="startNextBatch">开始下一批次（剩余{{ remainingQuantity }}块）</el-button><el-tag v-else-if="orderCompleted" type="success" effect="plain">订单已完成</el-tag><el-button type="primary" plain size="small" @click="toggleSimulation">{{ simulationPaused ? '恢复模拟' : '暂停模拟' }}</el-button></div>
     </section>
 
     <ProductionPlanCard v-if="currentPlan" :plan="currentPlan" class="production-plan" />

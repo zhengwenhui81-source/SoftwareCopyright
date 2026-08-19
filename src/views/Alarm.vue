@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
 import BaseChart from '@/components/charts/BaseChart.vue'
 import { alarmLevels, alarmRecords, alarmTrend } from '@/mock/alarm'
 import { getLinkedAlarms, subscribeLinkedAlarms } from '@/industrialAlarmLink'
@@ -17,11 +18,13 @@ import {
   submitRecoveryVerification,
 } from '@/alarmEvent'
 
+const router = useRouter()
+
 const statusMeta = {
   new: { label: '新报警', type: 'danger' },
   acknowledged: { label: '已确认', type: 'warning' },
   processing: { label: '处理中', type: 'warning' },
-  recovery_pending: { label: '恢复验证', type: 'primary' },
+  recovery_pending: { label: '待恢复确认', type: 'warning' },
   closed: { label: '已关闭', type: 'success' },
   cancelled: { label: '已取消', type: 'info' },
 }
@@ -156,6 +159,9 @@ function handleRecoveryDecision() {
     applyResult(returnAlarmToProcessing(selected.value.id, recovery?.operator || '当前用户', recovery?.description || '恢复验证未通过'), '验证未通过，已返回处理阶段')
   }
 }
+function goToProductionMonitor() {
+  router.push('/production')
+}
 
 const unsubscribeLinked = subscribeLinkedAlarms((alarm) => {
   createAlarmEvent(alarm, 'production_alarm')
@@ -203,7 +209,7 @@ onBeforeUnmount(() => {
         <h4>基础信息</h4>
         <el-descriptions :column="2" border><el-descriptions-item label="报警编号">{{ selected.id }}</el-descriptions-item><el-descriptions-item label="负责人">{{ selected.owner }}</el-descriptions-item><el-descriptions-item label="来源">{{ sourceLabels[selected.sourceType] || '工业异常报警' }}</el-descriptions-item><el-descriptions-item label="更新时间">{{ selected.updateTime }}</el-descriptions-item></el-descriptions>
 
-        <template v-if="hasProductionContext"><h4>生产上下文</h4><el-descriptions :column="2" border><el-descriptions-item v-if="selected.batchId" label="生产批次">{{ selected.batchId }}</el-descriptions-item><el-descriptions-item v-if="selected.processName" label="工序">{{ selected.processName }}</el-descriptions-item><el-descriptions-item v-if="selected.parameterName" label="参数">{{ selected.parameterName }}</el-descriptions-item><el-descriptions-item v-if="selected.currentValue !== '' && selected.currentValue != null" label="当前值">{{ displayValue(selected) }}</el-descriptions-item><el-descriptions-item v-if="selected.threshold" label="标准阈值">{{ selected.threshold }}</el-descriptions-item></el-descriptions></template>
+        <template v-if="hasProductionContext"><h4>生产上下文</h4><el-descriptions :column="2" border><el-descriptions-item v-if="selected.batchId" label="生产批次">{{ selected.batchId }}</el-descriptions-item><el-descriptions-item v-if="selected.processName" label="工序">{{ selected.processName }}</el-descriptions-item><el-descriptions-item v-if="selected.parameterName" label="参数">{{ selected.parameterName }}</el-descriptions-item><el-descriptions-item v-if="selected.currentValue !== '' && selected.currentValue != null" label="当前值">{{ displayValue(selected) }}</el-descriptions-item><el-descriptions-item v-if="selected.threshold" label="标准阈值">{{ selected.threshold }}</el-descriptions-item></el-descriptions><el-button v-if="selected.sourceType === 'production_event'" type="primary" link size="small" @click="goToProductionMonitor">前往生产监控处理</el-button></template>
 
         <template v-if="hasEquipmentContext"><h4>设备上下文</h4><el-descriptions :column="2" border><el-descriptions-item v-if="selected.equipmentId" label="设备编号">{{ selected.equipmentId }}</el-descriptions-item><el-descriptions-item v-if="selected.equipmentName" label="设备名称">{{ selected.equipmentName }}</el-descriptions-item><el-descriptions-item v-if="selected.healthScore != null" label="健康评分">{{ selected.healthScore }}</el-descriptions-item><el-descriptions-item v-if="selected.failureProbability != null" label="故障概率">{{ selected.failureProbability }}%</el-descriptions-item></el-descriptions></template>
 

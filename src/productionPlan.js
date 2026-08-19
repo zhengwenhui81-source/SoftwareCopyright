@@ -90,15 +90,64 @@ export function updateProductionRuntime(batchId, runtime = {}) {
 
 function createBatchId(previousBatchId, batches) {
   const matched = String(previousBatchId || '').match(/^(.*-)(\d+)$/)
-  if (!matched) return `PL-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-001`
-  const [, prefix, suffix] = matched
-  const width = suffix.length
+  const datePrefix = `PL-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-`
+  const prefix = matched?.[1] || datePrefix
+  const suffix = matched?.[2] || '000'
+  const width = Math.max(suffix.length, 3)
   const max = batches
     .filter((item) => String(item.batchId || '').startsWith(prefix))
     .map((item) => Number(String(item.batchId).slice(prefix.length)))
     .filter(Number.isFinite)
     .reduce((value, current) => Math.max(value, current), Number(suffix))
   return `${prefix}${String(max + 1).padStart(width, '0')}`
+}
+
+function createPlanId(plans) {
+  const date = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+  const prefix = `PLAN-${date}-`
+  const max = plans
+    .filter((item) => String(item.id || '').startsWith(prefix))
+    .map((item) => Number(String(item.id).slice(prefix.length)))
+    .filter(Number.isFinite)
+    .reduce((value, current) => Math.max(value, current), 0)
+  return `${prefix}${String(max + 1).padStart(3, '0')}`
+}
+
+function createOrderNo(plans) {
+  const date = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+  const prefix = `HT${date}`
+  const max = plans
+    .filter((item) => String(item.orderNo || '').startsWith(prefix))
+    .map((item) => Number(String(item.orderNo).slice(prefix.length)))
+    .filter(Number.isFinite)
+    .reduce((value, current) => Math.max(value, current), 0)
+  return `${prefix}${String(max + 1).padStart(3, '0')}`
+}
+
+/** 创建新的生产订单及其首个运行批次，历史订单与批次保持不变。 */
+export function createProductionOrder(input = {}) {
+  const steelGrade = String(input.steelGrade || '').trim()
+  const specification = String(input.specification || '').trim()
+  const customer = String(input.customer || '').trim()
+  const deliveryDate = String(input.deliveryDate || '').trim()
+  const quantity = Math.floor(Number(input.quantity))
+  if (!steelGrade || !specification || !customer || !deliveryDate || !Number.isFinite(quantity) || quantity <= 0) {
+    return { created: false, reason: 'invalid_input', plan: null, batch: null }
+  }
+  const data = readData()
+  const plan = {
+    id: createPlanId(data.plans), orderNo: createOrderNo(data.plans), steelGrade, specification,
+    quantity, completed: 0, customer, deliveryDate, status: '生产中',
+  }
+  const batch = {
+    batchId: createBatchId('', data.batches), planId: plan.id, steelGrade, specification,
+    batchQuantity: quantity, currentProcess: '炼钢与连铸', progress: 0,
+    startTime: nowText(), operators: input.operators || '张工 / 赵工', processStatus: 'running',
+  }
+  data.plans.push(plan)
+  data.batches.push(batch)
+  saveData(data)
+  return { created: true, reason: 'created', plan: clone(plan), batch: clone(batch) }
 }
 
 /** 当前批次完成但订单仍有剩余数量时，创建下一生产批次。 */

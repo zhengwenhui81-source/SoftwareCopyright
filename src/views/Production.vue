@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Operation } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
 import BatchProgress from '@/components/production/BatchProgress.vue'
 import ProcessNode from '@/components/production/ProcessNode.vue'
 import ProcessTrendChart from '@/components/production/ProcessTrendChart.vue'
@@ -9,12 +10,14 @@ import ProductionPlanCard from '@/components/production/ProductionPlanCard.vue'
 import ProductionEventTable from '@/components/production/ProductionEventTable.vue'
 import { initialProductionProcesses, statusMeta, fluctuateProcessValue } from '@/mock/production'
 import { createManualProcessAlarm, evaluateProcessAlarms, getLinkedAlarms, LINKED_ALARM_CHANGED } from '@/industrialAlarmLink'
-import { completeProductionBatch, createNextProductionBatch, getProductionBatch, getProductionPlans, getProductionRuntime, updateBatchProgress, updateProductionRuntime } from '@/productionPlan'
+import { completeProductionBatch, createNextProductionBatch, createProductionOrder, getProductionBatch, getProductionPlans, getProductionRuntime, updateBatchProgress, updateProductionRuntime } from '@/productionPlan'
 import { analyzeParameterStatus, appendRuntimeParameterSample, getProcessParameters } from '@/processParameter'
 import { PROCESS_PARAMETER_CHANGED, processParameterRules } from '@/processParameter'
 import { closeProductionEvent, createProductionEvent, getProductionEvents, updateProductionEventStatus } from '@/productionEvent'
 import { createProductionAdjustment, executeProductionAdjustment } from '@/productionAdjustment'
-import { ALARM_EVENT_CHANGED, getAlarmEvents } from '@/alarmEvent'
+import { ALARM_EVENT_CHANGED, getAlarmEvents, startAlarmProcessing } from '@/alarmEvent'
+
+const router = useRouter()
 
 const productionPlans = ref(getProductionPlans())
 const batch = ref(getProductionBatch())
@@ -51,7 +54,7 @@ const normalCount = computed(() => processes.value.length - abnormalCount.value 
 const productionStatus = computed(() => abnormalCount.value
   ? { label: '异常', className: 'danger' }
   : recoveryPendingCount.value
-    ? { label: '待确认', className: 'warning' }
+    ? { label: '待恢复确认', className: 'warning' }
     : currentProcess.value
       ? { label: '运行中', className: 'running-status' }
       : { label: '正常', className: 'success' })
@@ -79,8 +82,11 @@ const parameterStatusMeta = {
   low: { label: '偏低', type: 'warning' },
 }
 const productionEvents = ref([])
+const alarmRevision = ref(0)
 const adjustmentVisible = ref(false)
+const orderVisible = ref(false)
 const adjustmentForm = ref({ processId: '', processName: '', parameterKey: '', parameterName: '', currentValue: 0, targetValue: 0, unit: '', lowerLimit: 0, upperLimit: 0, operator: '张工', reason: '' })
+const orderForm = ref({ steelGrade: '', specification: '', quantity: 0, deliveryDate: '', customer: '' })
 
 function ensureAnalysisProcessSelection() {
   const options = analysisProcessOptions.value
@@ -103,19 +109,64 @@ function refreshProductionEvents() {
   productionEvents.value = getProductionEvents().filter((item) => item.batchId === batch.value?.batchId)
 }
 
-function syncProductionEvents() {
-  if (selectedAnalysisProcess.value?.baseStatus === 'waiting') return refreshProductionEvents()
-  if (!parameterRecord.value) return refreshProductionEvents()
-  parameterStatuses.value.filter((item) => item.status !== '正常').forEach((item) => {
+function syncProductionEvents(process = selectedAnalysisProcess.value) {
+  if (!process || process.baseStatus === 'waiting') return refreshProductionEvents()
+  const record = getProcessParameters(batch.value?.batchId, process.name)
+  if (!record) return refreshProductionEvents()
+  analyzeParameterStatus(record).filter((item) => item.status !== '正常').forEach((item) => {
     createProductionEvent({
-      batchId: parameterRecord.value.batchId, steelGrade: currentPlan.value?.steelGrade, process: parameterRecord.value.process,
+      batchId: record.batchId, steelGrade: currentPlan.value?.steelGrade, process: record.process,
       parameterKey: item.key, parameter: item.name, currentValue: item.value, unit: item.unit, threshold: item.range,
-      parameterStatus: item.status, level: 'warning', title: `${parameterRecord.value.process}${item.name}${item.status}`,
+      parameterStatus: item.status, level: 'warning', title: `${record.process}${item.name}${item.status}`,
       description: item.description,
       suggestion: [`复核${item.name}工艺设定`, '确认当前工序设备运行状态', '持续观察参数变化趋势'],
     })
   })
   refreshProductionEvents()
+}
+
+function syncRunningProcessParameterSample(process) {
+  if (!process || process.baseStatus !== 'running') return null
+  const rules = processParameterRules[process.name] || {}
+  const parameters = Object.fromEntries(Object.entries(rules).flatMap(([key, rule]) => {
+    const parameter = process.parameters.find((item) => item.key === key || rule.aliases.includes(item.name))
+    return parameter && Number.isFinite(Number(parameter.value)) ? [[key, Number(parameter.value)]] : []
+  }))
+  if (!Object.keys(parameters).length) return null
+  return appendRuntimeParameterSample({
+    batchId: batch.value.batchId,
+    process: process.name,
+    processId: process.id,
+    parameters,
+    source: 'simulation',
+    // 仅运行中工序使用：异常阻断推进后仍按10秒节流保留趋势采样点。
+    recordUnchanged: true,
+  })
+}
+
+function getProductionAlarmForParameter(process, parameterKey) {
+  alarmRevision.value
+  if (!process || !parameterKey) return null
+  return getAlarmEvents({ sourceType: 'production_event' })
+    .filter((alarm) => alarm.batchId === batch.value?.batchId
+      && (alarm.processId === process.id || alarm.processName === process.name)
+      && alarm.parameterKey === parameterKey
+      && !['closed', 'cancelled'].includes(alarm.status))
+    .sort((a, b) => String(b.updateTime || b.createTime).localeCompare(String(a.updateTime || a.createTime)))[0] || null
+}
+
+function getAdjustmentGate(item) {
+  const process = selectedAnalysisProcess.value
+  const alarm = getProductionAlarmForParameter(process, item?.key || item?.parameterKey)
+  if (!alarm) return { allowed: false, status: '', alarm: null, message: '等待对应生产异常报警同步后再执行参数调整' }
+  if (alarm.status === 'new') return { allowed: false, status: alarm.status, alarm, message: '请先到报警中心确认该报警后再执行参数调整' }
+  if (['acknowledged', 'processing'].includes(alarm.status)) return { allowed: true, status: alarm.status, alarm, message: '' }
+  if (alarm.status === 'recovery_pending') return { allowed: false, status: alarm.status, alarm, message: '参数已恢复，等待恢复验证' }
+  return { allowed: false, status: alarm.status, alarm, message: '当前报警状态不允许执行参数调整' }
+}
+
+function goToAlarmCenter() {
+  router.push('/alarm')
 }
 
 function confirmProductionEvent(eventId) {
@@ -166,7 +217,48 @@ function startNextBatch() {
   refreshProductionEvents()
   syncProcessAlarmStates()
   ensureAnalysisProcessSelection()
+  syncRunningProcessParameterSample(currentProcess.value)
+  syncProductionEvents(currentProcess.value)
   ElMessage.success(`已开始新批次 ${batch.value.batchId}，本批计划 ${result.remaining} 块`)
+}
+
+function openNewOrderForm() {
+  const plan = currentPlan.value || {}
+  orderForm.value = {
+    steelGrade: plan.steelGrade || 'Q355B', specification: plan.specification || '30×2500×12000mm',
+    quantity: Number(plan.quantity) || 20, deliveryDate: plan.deliveryDate || '', customer: plan.customer || '',
+  }
+  orderVisible.value = true
+}
+
+function createNewOrder() {
+  const form = orderForm.value
+  if (!form.steelGrade.trim() || !form.specification.trim() || !form.customer.trim() || !form.deliveryDate || Number(form.quantity) <= 0) {
+    return ElMessage.warning('请完整填写订单信息，且计划数量必须大于0')
+  }
+  const result = createProductionOrder(form)
+  if (!result.created) return ElMessage.error('新生产订单创建失败，请检查输入信息')
+  batch.value = result.batch
+  productionPlans.value = getProductionPlans()
+  const initialRuntime = {
+    currentProcessId: initialProductionProcesses[0]?.id || '', currentProcessIndex: 0,
+    processProgress: Object.fromEntries(initialProductionProcesses.map((item) => [item.id, 0])),
+    baseStatuses: Object.fromEntries(initialProductionProcesses.map((item, index) => [item.id, index === 0 ? 'running' : 'waiting'])),
+    simulationPaused: false,
+  }
+  runtimeSnapshot.value = updateProductionRuntime(batch.value.batchId, initialRuntime)
+  processes.value = createRuntimeProcesses()
+  simulationPaused.value = false
+  selectedProcess.value = null
+  selectedAnalysisProcessId.value = ''
+  analysisProcessManuallySelected.value = false
+  refreshProductionEvents()
+  syncProcessAlarmStates()
+  ensureAnalysisProcessSelection()
+  syncRunningProcessParameterSample(currentProcess.value)
+  syncProductionEvents(currentProcess.value)
+  orderVisible.value = false
+  ElMessage.success(`已创建生产订单 ${result.plan.orderNo}，并启动首批次 ${result.batch.batchId}`)
 }
 
 let lastRuntimeSave = 0
@@ -253,51 +345,7 @@ function syncProcessAlarmStates() {
       process.runtimeAlarmState = null
       process.alarmDetail = null
     }
-    if (import.meta.env.DEV && process.id === 'finishing') {
-      const linkedAlarmRows = allLinkedAlarms
-        .filter((alarm) => alarm.batchNo === batch.value?.batchId)
-        .map(({ id, processId, parameterKey, status, source }) => ({ id, processId, parameterKey, status, source }))
-      const unifiedAlarmRows = allProductionEventAlarms
-        .filter((alarm) => alarm.batchId === batch.value?.batchId)
-        .map(({ id, sourceType, sourceEventId, status, processId, parameterKey, title }) => ({ id, sourceType, sourceEventId, status, processId, parameterKey, title }))
-      const currentAbnormalRows = currentAbnormalDetails.map((item) => ({
-        parameterKey: item.key, parameterName: item.rule.parameterName, currentValue: item.value,
-        min: item.rule.min, max: item.rule.max, alarmId: item.alarm?.id || '', alarmStatus: item.alarm?.status || '',
-      }))
-      const recoveryPendingRows = recoveryPendingDetails.map((item) => ({
-        parameterKey: item.key, parameterName: item.rule.parameterName, currentValue: item.value,
-        min: item.rule.min, max: item.rule.max, alarmId: item.alarm?.id || '', alarmStatus: item.alarm?.status || '',
-        source: item.alarm?.source || '', sourceType: item.alarm?.sourceType || '',
-        sourceEventId: item.alarm?.sourceEventId || '',
-      }))
-
-      console.debug('[Production debug] current batchNo', batch.value?.batchId)
-      console.debug('[Production debug] plate-monitor-linked-alarms (current batch, all statuses)')
-      console.table(linkedAlarmRows)
-      console.debug('[Production debug] plate-monitor-linked-alarms (status !== closed)')
-      console.table(linkedAlarmRows.filter((alarm) => alarm.status !== 'closed'))
-      console.debug('[Production debug] thick_plate_alarm_events / production_event (current batch, all statuses)')
-      console.table(unifiedAlarmRows)
-      console.debug('[Production debug] thick_plate_alarm_events / production_event (status !== closed/cancelled)')
-      console.table(unifiedAlarmRows.filter((alarm) => !['closed', 'cancelled'].includes(alarm.status)))
-      console.debug('[Production debug] finishing currentAbnormalDetails')
-      console.table(currentAbnormalRows)
-      console.debug('[Production debug] finishing recoveryPendingDetails')
-      console.table(recoveryPendingRows)
-      console.debug('[Production debug] finishing', {
-        currentAbnormalDetails: currentAbnormalRows,
-        recoveryPendingDetails: recoveryPendingRows,
-        runtimeAlarmState: process.runtimeAlarmState,
-        alarmDetails: process.alarmDetails,
-      })
-      console.debug('[Production debug] finishing alarmDetails')
-      console.table(process.alarmDetails)
-    }
   })
-  if (import.meta.env.DEV) {
-    console.debug('[Production] active production risks', activeAlarms.map(({ id, source, sourceType, sourceEventId, processId, parameterKey, triggerParameter, value, threshold, status }) => ({ id, source, sourceType, sourceEventId, processId, parameterKey, triggerParameter, value, threshold, status })))
-    console.debug('[Production] process runtime states', processes.value.map(({ id, name, baseStatus, runtimeAlarmState, alarmDetails }) => ({ id, name, baseStatus, runtimeAlarmState, alarmDetails, alarmDetailCount: alarmDetails?.length || 0 })))
-  }
 }
 
 function reportException() {
@@ -316,6 +364,8 @@ function reportException() {
 function openAdjustment(item) {
   const process = selectedAnalysisProcess.value
   if (!process) return ElMessage.warning('请选择需要分析的工序')
+  const gate = getAdjustmentGate(item)
+  if (!gate.allowed) return ElMessage.warning(gate.message)
   adjustmentForm.value = {
     processId: process.id, processName: process.name,
     parameterKey: item.key, parameterName: item.name, currentValue: item.value,
@@ -328,6 +378,13 @@ function openAdjustment(item) {
 
 function executeAdjustment() {
   const form = adjustmentForm.value
+  const gate = getAdjustmentGate({ parameterKey: form.parameterKey })
+  if (!gate.allowed) return ElMessage.warning(gate.message)
+  if (gate.status === 'acknowledged') {
+    const processing = startAlarmProcessing(gate.alarm.id, form.operator || '当前用户')
+    if (!processing.updated) return ElMessage.warning('报警尚未进入处理阶段，暂不能执行参数调整')
+    alarmRevision.value += 1
+  }
   const target = Number(form.targetValue)
   if (!Number.isFinite(target) || target < form.lowerLimit || target > form.upperLimit) return ElMessage.warning('目标参数仍超出工艺标准范围')
   if (!form.operator.trim() || !form.reason.trim()) return ElMessage.warning('请填写执行人员和调整原因')
@@ -384,15 +441,42 @@ function handleParameterChanged(event) {
 window.addEventListener(PROCESS_PARAMETER_CHANGED, handleParameterChanged)
 const handleLinkedAlarmChanged = () => syncProcessAlarmStates()
 window.addEventListener(LINKED_ALARM_CHANGED, handleLinkedAlarmChanged)
-const handleUnifiedAlarmChanged = () => syncProcessAlarmStates()
+const handleUnifiedAlarmChanged = () => {
+  alarmRevision.value += 1
+  syncProcessAlarmStates()
+}
 window.addEventListener(ALARM_EVENT_CHANGED, handleUnifiedAlarmChanged)
+
+function fluctuateAbnormalRunningParameters(process) {
+  const runtimeAmplitudes = { furnaceTemperature: 4, heatingTime: 1, rollingForce: 180, rollingSpeed: .08, rollingPressure: 180, thickness: .04, coolingRate: .35, finishCoolingTemperature: 4, thicknessDeviation: .04, surfaceQuality: 0 }
+  process.parameters = process.parameters.map((parameter) => {
+    const ruleEntry = Object.entries(processParameterRules[process.name] || {}).find(([key, rule]) => key === parameter.key || rule.aliases.includes(parameter.name))
+    if (!ruleEntry) return parameter
+    const [key, rule] = ruleEntry
+    const currentValue = Number(parameter.value)
+    if (!Number.isFinite(currentValue) || (currentValue >= rule.min && currentValue <= rule.max)) return parameter
+    const amplitude = runtimeAmplitudes[key] ?? .12
+    const decimals = Number.isInteger(currentValue) ? 0 : 2
+    let nextValue = fluctuateProcessValue(currentValue, amplitude, decimals)
+    const boundaryOffset = Math.max(Math.abs(rule.max - rule.min) * .01, Math.abs(rule.max) * .001, .01)
+    if (currentValue > rule.max) nextValue = Math.max(nextValue, rule.max + boundaryOffset)
+    if (currentValue < rule.min) nextValue = Math.min(nextValue, rule.min - boundaryOffset)
+    return { ...parameter, value: nextValue }
+  })
+}
 
 function updateProduction() {
   if (simulationPaused.value) return
   const running = processes.value.find((item) => item.baseStatus === 'running')
   if (!running) return
+  syncRunningProcessParameterSample(running)
   syncProcessAlarmStates()
+  syncProductionEvents(running)
   if (running.runtimeAlarmState === 'current_abnormal') {
+    // 异常阻断仅暂停推进；当前运行工序仍持续采集受约束的异常参数趋势。
+    fluctuateAbnormalRunningParameters(running)
+    syncRunningProcessParameterSample(running)
+    syncProductionEvents(running)
     persistRuntime(true)
     return
   }
@@ -402,12 +486,7 @@ function updateProduction() {
     const amplitude = ruleEntry ? runtimeAmplitudes[ruleEntry[0]] ?? .12 : .12
     return { ...parameter, value: fluctuateProcessValue(parameter.value, amplitude, typeof parameter.value === 'number' && !Number.isInteger(parameter.value) ? 2 : 0) }
   })
-  const rules = processParameterRules[running.name] || {}
-  const runtimeParameters = Object.fromEntries(Object.entries(rules).flatMap(([key, rule]) => {
-    const parameter = running.parameters.find((item) => item.key === key || rule.aliases.includes(item.name))
-    return parameter && Number.isFinite(Number(parameter.value)) ? [[key, Number(parameter.value)]] : []
-  }))
-  if (Object.keys(runtimeParameters).length) appendRuntimeParameterSample({ batchId: batch.value.batchId, process: running.name, processId: running.id, parameters: runtimeParameters, source: 'simulation' })
+  syncRunningProcessParameterSample(running)
   const linkedAlarms = evaluateProcessAlarms([running], batch.value?.batchId)
   syncProcessAlarmStates()
   if (linkedAlarms.length) ElMessage.warning(`检测到${linkedAlarms[0].reason}，已自动生成报警`)
@@ -426,6 +505,8 @@ function updateProduction() {
       processes.value[nextIndex].baseStatus = 'running'
       processes.value[nextIndex].progress = 8
       processes.value[nextIndex].duration = '进行中'
+      syncRunningProcessParameterSample(processes.value[nextIndex])
+      syncProductionEvents(processes.value[nextIndex])
       ElMessage.success(`${processes.value[nextIndex].name}工序已开始`)
     }
     syncProcessAlarmStates()
@@ -440,7 +521,11 @@ function updateProduction() {
 }
 
 const timer = window.setInterval(updateProduction, 3000)
-if (currentProcess.value) evaluateProcessAlarms([currentProcess.value], batch.value?.batchId)
+if (currentProcess.value) {
+  syncRunningProcessParameterSample(currentProcess.value)
+  evaluateProcessAlarms([currentProcess.value], batch.value?.batchId)
+  syncProductionEvents(currentProcess.value)
+}
 syncProcessAlarmStates()
 ensureAnalysisProcessSelection()
 onBeforeUnmount(() => {
@@ -456,7 +541,7 @@ onBeforeUnmount(() => {
   <div class="production-page">
     <section class="page-header">
       <div><p>THICK PLATE PRODUCTION DIGITAL TWIN</p><h2>厚板生产全过程可视化监控</h2></div>
-      <div class="header-actions"><span><i></i>模拟数据运行</span><el-button v-if="canStartNextBatch" type="success" plain size="small" @click="startNextBatch">开始下一批次（剩余{{ remainingQuantity }}块）</el-button><el-tag v-else-if="orderCompleted" type="success" effect="plain">订单已完成</el-tag><el-button type="primary" plain size="small" @click="toggleSimulation">{{ simulationPaused ? '恢复模拟' : '暂停模拟' }}</el-button></div>
+      <div class="header-actions"><span><i></i>模拟数据运行</span><el-button v-if="canStartNextBatch" type="success" plain size="small" @click="startNextBatch">开始下一批次（剩余{{ remainingQuantity }}块）</el-button><el-button v-else-if="orderCompleted && batchCompleted" type="success" plain size="small" @click="openNewOrderForm">创建新生产订单</el-button><el-tag v-else-if="orderCompleted" type="success" effect="plain">订单已完成</el-tag><el-button type="primary" plain size="small" @click="toggleSimulation">{{ simulationPaused ? '恢复模拟' : '暂停模拟' }}</el-button></div>
     </section>
 
     <ProductionPlanCard v-if="currentPlan" :plan="currentPlan" class="production-plan" />
@@ -485,7 +570,7 @@ onBeforeUnmount(() => {
             <article v-for="item in parameterStatuses" :key="item.key" :class="`level-${item.level}`">
               <div><span>{{ item.name }}</span><el-tag :type="parameterStatusMeta[item.level].type" size="small">{{ parameterStatusMeta[item.level].label }}</el-tag></div>
               <strong>{{ item.value }}<small>{{ item.unit }}</small></strong>
-              <p>标准范围：{{ item.range }}</p><em>{{ item.description }}</em><el-button v-if="item.level !== 'normal'" type="warning" link size="small" @click="openAdjustment(item)">执行参数调整</el-button>
+              <p>标准范围：{{ item.range }}</p><em>{{ item.description }}</em><template v-if="item.level !== 'normal'"><el-button type="warning" link size="small" :disabled="!getAdjustmentGate(item).allowed" @click="openAdjustment(item)">执行参数调整</el-button><template v-if="!getAdjustmentGate(item).allowed"><small>{{ getAdjustmentGate(item).message }}</small><el-button v-if="getAdjustmentGate(item).status === 'new'" type="primary" link size="small" @click="goToAlarmCenter">前往报警中心</el-button></template></template>
             </article>
           </div>
           <ProcessTrendChart :batch-id="parameterRecord.batchId" :process="parameterRecord.process" :parameters="parameterStatuses" />
@@ -502,6 +587,12 @@ onBeforeUnmount(() => {
       <el-descriptions :column="2" border class="adjustment-summary"><el-descriptions-item label="生产批次">{{ batch?.batchId }}</el-descriptions-item><el-descriptions-item label="工序">{{ adjustmentForm.processName }}</el-descriptions-item><el-descriptions-item label="参数">{{ adjustmentForm.parameterName }}</el-descriptions-item><el-descriptions-item label="当前值">{{ adjustmentForm.currentValue }} {{ adjustmentForm.unit }}</el-descriptions-item><el-descriptions-item label="标准范围" :span="2">{{ adjustmentForm.lowerLimit }}–{{ adjustmentForm.upperLimit }} {{ adjustmentForm.unit }}</el-descriptions-item></el-descriptions>
       <el-form label-position="top"><el-form-item label="目标值"><el-input-number v-model="adjustmentForm.targetValue" :precision="Math.abs(adjustmentForm.upperLimit) < 100 ? 2 : 0" :step="Math.abs(adjustmentForm.upperLimit) < 100 ? 0.1 : 100" style="width:100%" /></el-form-item><el-form-item label="执行人员"><el-input v-model="adjustmentForm.operator" /></el-form-item><el-form-item label="调整原因"><el-input v-model="adjustmentForm.reason" type="textarea" :rows="3" /></el-form-item></el-form>
       <template #footer><el-button @click="adjustmentVisible=false">取消</el-button><el-button type="primary" @click="executeAdjustment">执行参数调整</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="orderVisible" width="560px" title="创建新生产订单">
+      <el-alert title="生产计划演示 · 基于工业仿真数据" type="info" :closable="false" show-icon />
+      <el-form label-position="top" style="margin-top:14px"><div class="form-grid"><el-form-item label="钢种"><el-input v-model="orderForm.steelGrade" /></el-form-item><el-form-item label="计划数量"><el-input-number v-model="orderForm.quantity" :min="1" :precision="0" style="width:100%" /></el-form-item></div><el-form-item label="产品规格"><el-input v-model="orderForm.specification" /></el-form-item><div class="form-grid"><el-form-item label="交付日期"><el-input v-model="orderForm.deliveryDate" placeholder="例如：2026-08-20" /></el-form-item><el-form-item label="客户"><el-input v-model="orderForm.customer" /></el-form-item></div></el-form>
+      <template #footer><el-button @click="orderVisible=false">取消</el-button><el-button type="primary" @click="createNewOrder">确认创建并启动</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="detailVisible" width="620px" class="process-dialog" destroy-on-close>

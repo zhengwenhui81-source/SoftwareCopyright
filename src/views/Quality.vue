@@ -8,7 +8,7 @@ import QualityMetricCard from '@/components/quality/QualityMetricCard.vue'
 import QualityTrace from '@/components/quality/QualityTrace.vue'
 import { defectDistribution, inspectionItems, qualityBatches, qualityMetrics, qualityStatus, qualityTrend } from '@/mock/quality'
 import { getProductionBatches } from '@/productionPlan'
-import { analyzeQualityStatus, getBatchQuality, getQualityData, QUALITY_DATA_CHANGED } from '@/qualityData'
+import { analyzeQualityStatus, ensureQualityRecord, getBatchQuality, getQualityData, QUALITY_DATA_CHANGED } from '@/qualityData'
 import { confirmQualityRecovery, continueQualityHandling, createQualityEvent, getQualityEvents, QUALITY_EVENT_CHANGED } from '@/qualityEvent'
 import { createQualityInspectionTask, getQualityInspectionTasks, startQualityInspectionTask, completeQualityInspectionTask, QUALITY_INSPECTION_CHANGED } from '@/qualityInspection'
 
@@ -20,7 +20,10 @@ const detailVisible = ref(false)
 const selectedBatch = ref(null)
 const trendQualified = ref([...qualityTrend.qualified])
 const trendThickness = ref([...qualityTrend.thickness])
-const filteredBatches = computed(() => batches.value.filter((item) => (!statusFilter.value || item.status === statusFilter.value) && (!keyword.value || `${item.batchNo}${item.steelGrade}${item.specification}`.toLowerCase().includes(keyword.value.toLowerCase()))))
+const batchStatusMeta = { ...qualityStatus, inspecting: { label: '复检中', type: 'primary' } }
+const filteredBatches = computed(() => batches.value
+  .map((item) => ({ ...item, status: getBatchDisplayStatus(item) }))
+  .filter((item) => (!statusFilter.value || item.status === statusFilter.value) && (!keyword.value || `${item.batchNo}${item.steelGrade}${item.specification}`.toLowerCase().includes(keyword.value.toLowerCase()))))
 const productionBatches = ref(getProductionBatches())
 const selectedQualityBatchId = ref(productionBatches.value.find((item) => item.processStatus === 'running')?.batchId || productionBatches.value[0]?.batchId || '')
 const qualityRevision = ref(0)
@@ -41,11 +44,55 @@ function refreshQualityClosure() {
   inspectionTasks.value = getQualityInspectionTasks()
   qualityRevision.value += 1
 }
+function ensureBatchQualityRecords() {
+  batches.value.forEach((batch) => {
+    ensureQualityRecord({
+      batchId: batch.batchNo,
+      steelGrade: batch.steelGrade,
+      specification: batch.specification,
+      quantity: batch.quantity,
+      thicknessDeviation: batch.thickness,
+      surfaceDefectRate: batch.defectRate,
+      flatness: batch.shape,
+      yieldStrength: batch.yield,
+      tensileStrength: batch.tensile,
+      requiresReinspection: batch.status === 'review',
+      qualityDisposition: batch.qualityStatus || batch.conclusion || batch.result || batch.status,
+      statusLabel: batchStatusMeta[batch.status]?.label || batch.status,
+      createTime: batch.time,
+      sourceBatchAnalysis: { ...batch },
+    })
+  })
+  qualityRevision.value += 1
+}
 function ensureQualityEvents() {
   getQualityData().forEach((record) => createQualityEvent(record, analyzeQualityStatus(record)))
   refreshQualityClosure()
 }
 function taskFor(event) { return inspectionTasks.value.find((item) => item.id === event.relatedInspectionTaskId) }
+function eventForBatch(batchId) { return qualityEvents.value.find((item) => item.batchId === batchId && item.status !== 'closed') || null }
+function latestEventForBatch(batchId) { return qualityEvents.value.find((item) => item.batchId === batchId) || null }
+function reviewTaskForBatch(batchId) {
+  const event = eventForBatch(batchId) || latestEventForBatch(batchId)
+  return event ? inspectionTasks.value.find((item) => item.eventId === event.id && item.status !== 'completed') || inspectionTasks.value.find((item) => item.eventId === event.id) || null : null
+}
+function getBatchDisplayStatus(batch) {
+  qualityRevision.value
+  const task = reviewTaskForBatch(batch.batchNo)
+  if (task?.status === 'pending' || task?.status === 'in_progress') return 'inspecting'
+  if (task?.status === 'completed') {
+    const analysis = analyzeQualityStatus(getBatchQuality(batch.batchNo))
+    if (['优秀', '合格'].includes(analysis?.qualityLevel?.label)) return 'qualified'
+  }
+  return batch.status
+}
+function getBatchActionLabel(batch) {
+  const task = reviewTaskForBatch(batch.batchNo)
+  if (task?.status === 'in_progress') return '完成复检'
+  if (task?.status === 'pending') return '开始复检'
+  if (task?.status === 'completed') return getBatchDisplayStatus(batch) === 'qualified' ? '复检已完成' : '查看复检'
+  return '发起复检'
+}
 function eventActionLabel(event) {
   if (event.status === 'closed') return '已完成闭环'
   if (event.status === 'verification_pending') return event.recovery?.verificationPassed ? '确认恢复并关闭' : '继续处置'
@@ -119,10 +166,40 @@ const defectOption = computed(() => ({
 }))
 
 function openDetail(row) { selectedBatch.value = row; detailVisible.value = true }
-function requestReview() {
-  selectedBatch.value.status = 'review'
-  ElMessage.success(`批次 ${selectedBatch.value.batchNo} 已提交复检任务`)
-  detailVisible.value = false
+async function requestReview() {
+  const batchId = selectedBatch.value?.batchNo
+  if (!batchId) return
+  ensureBatchQualityRecords()
+  let event = eventForBatch(batchId)
+  if (!event) {
+    const data = getBatchQuality(batchId)
+    const analysis = analyzeQualityStatus(data)
+    if (!data || !analysis) return ElMessage.warning('当前批次暂无可用于复检的质量检测记录')
+    const eventResult = createQualityEvent(data, analysis)
+    if (!eventResult.event) {
+      if (import.meta.env.DEV) console.warn('[Quality] create inspection event failed', { reason: eventResult.reason, batchId })
+      return ElMessage.warning(`复检事件创建失败：${eventResult.reason}`)
+    }
+    refreshQualityClosure()
+    event = eventForBatch(batchId) || eventResult.event
+  }
+  const existing = reviewTaskForBatch(batchId)
+  if (existing?.status === 'in_progress') {
+    const result = completeQualityInspectionTask(existing.id, existing.operator)
+    refreshQualityClosure()
+    ElMessage[result.completed ? 'success' : 'warning'](result.completed ? `复检完成，当前质量评分 ${result.analysis?.qualityScore ?? '—'}` : '复检任务状态不允许完成')
+    return
+  }
+  if (existing?.status === 'completed') return ElMessage.info(getBatchDisplayStatus(selectedBatch.value) === 'qualified' ? '该批次复检已完成并判定合格' : '该批次已有复检记录，请查看质量事件处置状态')
+  const taskResult = existing ? { created: false, reason: 'existing_task', task: existing } : createQualityInspectionTask(event)
+  const task = taskResult.task
+  if (!task) {
+    if (import.meta.env.DEV) console.warn('[Quality] create inspection task failed', { reason: taskResult.reason, qualityEventId: event?.id, qualityEventStatus: event?.status })
+    return ElMessage.warning(`复检任务创建失败：${taskResult.reason}`)
+  }
+  const result = startQualityInspectionTask(task.id, '质量检验员')
+  refreshQualityClosure()
+  ElMessage[result.updated ? 'success' : 'warning'](result.updated ? `批次 ${batchId} 已进入复检中` : '复检任务状态不允许启动')
 }
 function exportReport() { ElMessage.success('质量分析报告已生成（Demo）') }
 function updateQuality() {
@@ -136,6 +213,7 @@ function updateQuality() {
 }
 const timer = window.setInterval(updateQuality, 4000)
 onMounted(() => {
+  ensureBatchQualityRecords()
   ensureQualityEvents()
   window.addEventListener(QUALITY_EVENT_CHANGED, handleQualityChanged)
   window.addEventListener(QUALITY_INSPECTION_CHANGED, handleQualityChanged)
@@ -187,18 +265,18 @@ onBeforeUnmount(() => {
         <el-table-column label="厚度偏差" width="105"><template #default="scope"><span :class="{ exceed: scope.row.thickness > .25 }">{{ scope.row.thickness }} mm</span></template></el-table-column>
         <el-table-column prop="shape" label="板形评分" width="95"/><el-table-column label="缺陷率" width="90"><template #default="scope"><span :class="{ exceed: scope.row.defectRate > .5 }">{{ scope.row.defectRate }}%</span></template></el-table-column>
         <el-table-column prop="inspector" label="检验员" width="80"/><el-table-column prop="time" label="检验时间" width="100"/>
-        <el-table-column label="质量状态" width="90"><template #default="scope"><el-tag :type="qualityStatus[scope.row.status].type" size="small" effect="dark">{{ qualityStatus[scope.row.status].label }}</el-tag></template></el-table-column>
+        <el-table-column label="质量状态" width="90"><template #default="scope"><el-tag :type="batchStatusMeta[scope.row.status]?.type || 'info'" size="small" effect="dark">{{ batchStatusMeta[scope.row.status]?.label || scope.row.status }}</el-tag></template></el-table-column>
         <el-table-column label="操作" width="80" fixed="right"><template #default="scope"><el-button link type="primary" @click="openDetail(scope.row)">详情</el-button></template></el-table-column>
       </el-table>
     </section>
 
     <el-dialog v-model="detailVisible" width="720px" title="批次质量检测报告">
       <template v-if="selectedBatch">
-        <div class="report-head"><div><small>BATCH QUALITY REPORT</small><h3>{{ selectedBatch.batchNo }}</h3><p>{{ selectedBatch.steelGrade }} · {{ selectedBatch.specification }} mm</p></div><div class="result"><span>综合判定</span><el-tag :type="qualityStatus[selectedBatch.status].type" effect="dark" size="large">{{ qualityStatus[selectedBatch.status].label }}</el-tag></div></div>
+        <div class="report-head"><div><small>BATCH QUALITY REPORT</small><h3>{{ selectedBatch.batchNo }}</h3><p>{{ selectedBatch.steelGrade }} · {{ selectedBatch.specification }} mm</p></div><div class="result"><span>综合判定</span><el-tag :type="batchStatusMeta[getBatchDisplayStatus(selectedBatch)]?.type || 'info'" effect="dark" size="large">{{ batchStatusMeta[getBatchDisplayStatus(selectedBatch)]?.label || getBatchDisplayStatus(selectedBatch) }}</el-tag></div></div>
         <div class="report-metrics"><div><span>合格率</span><b>{{ (selectedBatch.qualified/selectedBatch.quantity*100).toFixed(1) }}%</b></div><div><span>厚度偏差</span><b>{{ selectedBatch.thickness }} mm</b></div><div><span>抗拉强度</span><b>{{ selectedBatch.tensile }} MPa</b></div><div><span>屈服强度</span><b>{{ selectedBatch.yield }} MPa</b></div></div>
         <h4>检测项目明细</h4><el-table :data="inspectionItems" border size="small"><el-table-column prop="item" label="检测项目"/><el-table-column prop="method" label="检测方法"/><el-table-column prop="standard" label="执行标准"/><el-table-column prop="result" label="检测结果"/><el-table-column label="判定" width="80"><template #default><el-tag type="success" size="small">符合</el-tag></template></el-table-column></el-table>
       </template>
-      <template #footer><el-button @click="detailVisible=false">关闭</el-button><el-button type="warning" plain @click="requestReview">发起复检</el-button><el-button type="primary" @click="ElMessage.success('批次质量报告已导出')">导出报告</el-button></template>
+      <template #footer><el-button @click="detailVisible=false">关闭</el-button><el-button type="warning" plain :disabled="getBatchActionLabel(selectedBatch) === '复检已完成'" @click="requestReview">{{ getBatchActionLabel(selectedBatch) }}</el-button><el-button type="primary" @click="ElMessage.success('批次质量报告已导出')">导出报告</el-button></template>
     </el-dialog>
   </div>
 </template>

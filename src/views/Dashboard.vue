@@ -34,7 +34,9 @@ const metrics = computed(() => {
   const decision = context.decision
   const suggestion = decision.recommendations?.[0]
   const productionTone = production.abnormalCount ? 'red' : alarms.recoveryPending.some((item) => item.domain === 'production') ? 'orange' : production.completed ? 'green' : 'blue'
-  const alarmTone = alarms.serious.length || alarms.active.some((item) => item.status !== 'recovery_pending') ? 'red' : alarms.recoveryPending.length ? 'orange' : 'green'
+  const alarmTone = alarms.serious.length || alarms.active.some((item) => item.status === 'new') ? 'red'
+    : alarms.recoveryPending.length || alarms.active.some((item) => item.status === 'acknowledged') ? 'orange'
+      : alarms.active.some((item) => item.status === 'processing') ? 'blue' : 'green'
   const equipmentTone = activeEquipment.length ? 'orange' : 'green'
   const qualityTone = quality.activeEvents.length ? 'red' : quality.activeTasks.length ? 'orange' : analysis?.qualityScore >= 80 ? 'green' : 'orange'
   const decisionTone = decision.riskLevel === '高' ? 'red' : decision.riskLevel === '中' ? 'orange' : 'green'

@@ -62,22 +62,27 @@ const runtimeSampleThresholds = {
   thicknessDeviation: .03, surfaceQuality: 1,
 }
 
-/** 追加生产运行仿真采样；同工序最多每10秒持久化一次，且参数需达到最小变化量。 */
+/** 追加生产运行仿真采样；同工序最多每10秒持久化一次，默认需达到最小变化量。 */
 export function appendRuntimeParameterSample(input = {}) {
   const { batchId, process } = input
   const rules = processParameterRules[process]
   if (!batchId || !process || !rules || !input.parameters) return { appended: false, reason: 'invalid_input', record: null }
   const records = readRecords()
   const previous = [...records].reverse().find((item) => item.batchId === batchId && item.process === process)
-  if (!previous) return { appended: false, reason: 'record_not_found', record: null }
   const timestamp = input.timestamp || new Date().toLocaleString('sv-SE').replace('T', ' ')
+  const monitored = Object.fromEntries(Object.keys(rules).filter((key) => Number.isFinite(Number(input.parameters[key]))).map((key) => [key, Number(input.parameters[key])]))
+  if (!Object.keys(monitored).length) return { appended: false, reason: 'no_monitored_parameter', record: previous ? clone(previous) : null }
+  if (!previous) {
+    const record = { batchId, process, processId: input.processId || '', parameters: monitored, timestamp, source: 'simulation', adjustmentId: '' }
+    records.push(record); saveRecords(records)
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(PROCESS_PARAMETER_CHANGED, { detail: { batchId, process, processId: input.processId || '', parameters: clone(record.parameters), source: 'simulation', record: clone(record) } }))
+    return { appended: true, reason: 'initial_sample', record: clone(record) }
+  }
   const previousTime = Date.parse(String(previous.timestamp).replace(' ', 'T'))
   const currentTime = Date.parse(String(timestamp).replace(' ', 'T'))
   if (previous.source === 'simulation' && Number.isFinite(previousTime) && Number.isFinite(currentTime) && currentTime - previousTime < 10000) return { appended: false, reason: 'throttled', record: clone(previous) }
-  const monitored = Object.fromEntries(Object.keys(rules).filter((key) => Number.isFinite(Number(input.parameters[key]))).map((key) => [key, Number(input.parameters[key])]))
-  if (!Object.keys(monitored).length) return { appended: false, reason: 'no_monitored_parameter', record: clone(previous) }
   const changed = Object.entries(monitored).some(([key, value]) => Math.abs(value - Number(previous.parameters[key])) >= (runtimeSampleThresholds[key] ?? .01))
-  if (!changed) return { appended: false, reason: 'change_below_threshold', record: clone(previous) }
+  if (!changed && !input.recordUnchanged) return { appended: false, reason: 'change_below_threshold', record: clone(previous) }
   const record = { batchId, process, processId: input.processId || '', parameters: { ...previous.parameters, ...monitored }, timestamp, source: 'simulation', adjustmentId: '' }
   records.push(record); saveRecords(records)
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(PROCESS_PARAMETER_CHANGED, { detail: { batchId, process, processId: input.processId || '', parameters: clone(record.parameters), source: 'simulation', record: clone(record) } }))

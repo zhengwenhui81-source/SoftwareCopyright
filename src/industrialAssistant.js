@@ -125,15 +125,32 @@ function equipmentAnswer(context, equipmentId) {
   }
 }
 
-function qualityAnswer(context) {
-  const { current, analysis, activeEvents, activeTasks, completedTasks, inspectionHistory } = context.quality
-  if (!current || !analysis) return { conclusion: '当前仿真数据中未找到对应批次质量记录。', basis: [], state: '暂无检测数据', suggestions: ['前往质量管理核对批次'], evidence: [], navigation: [{ label: '前往质量管理', path: routes.quality }] }
+function qualityAnswer(context, requestedBatchId = '') {
+  const quality = requestedBatchId ? buildQualityContext(requestedBatchId) : context.quality
+  const { current, analysis, activeEvents, historicalEvents, activeTasks, completedTasks, inspectionHistory } = quality
+  const relatedEvents = [...activeEvents, ...historicalEvents].sort(newestFirst)
+  if (!current || !analysis) {
+    if (relatedEvents.length || activeTasks.length || completedTasks.length) {
+      const event = relatedEvents[0]
+      const task = [...activeTasks, ...completedTasks].sort(newestFirst)[0]
+      return {
+        conclusion: `批次${requestedBatchId || event?.batchId || '—'}存在质量异常事件或复检记录，当前尚无可用的最新质量检测结果。`,
+        basis: [...relatedEvents.slice(0, 2).map((item) => `质量事件 ${item.id}：${item.title || '质量异常'}（${item.status}）`), ...(task ? [`复检任务 ${task.id}：${task.status}`] : [])],
+        state: activeEvents.length || activeTasks.length ? '处于质量处理或复检阶段' : '存在历史质量处置记录',
+        suggestions: ['前往质量管理核对质量事件与复检结果'],
+        evidence: uniqueEvidence([...relatedEvents.map((item) => ({ type: 'quality_event', id: item.id, label: item.title || '质量异常事件', value: item.status })), ...[...activeTasks, ...completedTasks].map((item) => ({ type: 'quality_inspection', id: item.id, label: '质量复检任务', value: item.status }))]),
+        navigation: [{ label: '前往质量管理', path: routes.quality }],
+      }
+    }
+    return { conclusion: '当前仿真数据中未找到对应批次质量记录。', basis: [], state: '暂无检测数据', suggestions: ['前往质量管理核对批次'], evidence: [], navigation: [{ label: '前往质量管理', path: routes.quality }] }
+  }
   const latestInspection = inspectionHistory.filter((item) => item.type === 'reinspection').at(-1)
-  const historyEvent = context.quality.historicalEvents[0]
-  const evidence = [{ type: 'quality_data', id: current.id, label: `批次${current.batchId}最新质量结果`, value: `${analysis.qualityScore}分 · ${analysis.qualityLevel.label}` }, ...activeEvents.map((item) => ({ type: 'quality_event', id: item.id, label: item.title || '质量异常事件', value: item.status })), ...completedTasks.slice(0, 2).map((item) => ({ type: 'quality_inspection', id: item.id, label: '质量复检', value: `${item.afterResult?.qualityScore ?? '暂无'}分 · ${item.afterResult?.qualityLevel || '暂无'}` }))]
+  const initialInspection = inspectionHistory.find((item) => item.type === 'initial')
+  const historyEvent = historicalEvents[0]
+  const evidence = [{ type: 'quality_data', id: current.id, label: `批次${current.batchId}最新质量结果`, value: `${analysis.qualityScore}分 · ${analysis.qualityLevel.label}` }, ...(initialInspection ? [{ type: 'quality_inspection', id: current.id, label: `批次${current.batchId}初检`, value: `${initialInspection.score}分 · ${initialInspection.level}` }] : []), ...relatedEvents.map((item) => ({ type: 'quality_event', id: item.id, label: item.title || '质量异常事件', value: item.status })), ...completedTasks.slice(0, 2).map((item) => ({ type: 'quality_inspection', id: item.id, label: '质量复检', value: `${item.afterResult?.qualityScore ?? '暂无'}分 · ${item.afterResult?.qualityLevel || '暂无'}` }))]
   return {
     conclusion: `批次${current.batchId}当前最新质量结果为${analysis.qualityScore}分，等级${analysis.qualityLevel.label}。`,
-    basis: [`异常指标 ${analysis.abnormalItems.length} 项`, ...(latestInspection ? [`最近复检 ${latestInspection.score}分 · ${latestInspection.level}`] : []), ...(historyEvent?.qualityScoreBefore != null ? [`历史异常事件记录初始评分 ${historyEvent.qualityScoreBefore}分`] : [])],
+    basis: [`异常指标 ${analysis.abnormalItems.length} 项`, ...(initialInspection ? [`历史初检 ${initialInspection.score}分 · ${initialInspection.level}`] : []), ...(latestInspection ? [`最近复检 ${latestInspection.score}分 · ${latestInspection.level}`] : []), ...(historyEvent?.qualityScoreBefore != null ? [`质量事件 ${historyEvent.id} 记录初始评分 ${historyEvent.qualityScoreBefore}分`] : [])],
     state: activeEvents.length ? `仍有${activeEvents.length}条活动质量事件，${activeTasks.length}项复检任务未完成` : latestInspection ? '质量复检已完成，当前以最新检测结果为准' : '当前无活动质量异常事件',
     suggestions: activeEvents.length ? ['前往质量管理完成复检与恢复确认'] : ['继续按批次保存质量检测记录'], evidence, navigation: [{ label: '前往质量管理', path: routes.quality }],
   }
@@ -176,13 +193,14 @@ function priorityAnswer(context) {
 
 function detectIntent(question) {
   const text = String(question || '').trim()
+  const batchId = text.match(/\bPL-\d{8}-\d{3,}\b/i)?.[0]?.toUpperCase() || ''
   if (/最优先|优先.*处理|应该处理什么|当前建议/.test(text)) return { type: 'priority' }
   const equipmentId = text.match(/\b[A-Z]{2,4}-\d{1,3}\b/i)?.[0]?.toUpperCase()
   if (equipmentId) return { type: 'equipment', equipmentId }
   if (/精轧/.test(text)) return { type: 'process', processName: '精轧' }
   if (/控冷|冷却速度|终冷温度/.test(text)) return { type: 'process', processName: '控冷' }
   if (/为什么.*报警|报警.*为什么|报警.*没.*消失|还有报警/.test(text)) return { type: 'alarm' }
-  if (/质量|复检|板厚|缺陷/.test(text)) return { type: 'quality' }
+  if (/质量|复检|板厚|缺陷/.test(text)) return { type: 'quality', batchId }
   if (/设备|故障|维护|健康/.test(text)) return { type: 'equipment_overview' }
   if (/异常|风险/.test(text)) return { type: 'anomaly' }
   if (/生产|批次|订单|运行情况|产线/.test(text)) return { type: 'production' }
@@ -212,7 +230,7 @@ export function answerIndustrialQuestion(question) {
   else if (intent.type === 'process') answer = processAnswer(context, intent.processName)
   else if (intent.type === 'equipment') answer = equipmentAnswer(context, intent.equipmentId)
   else if (intent.type === 'equipment_overview') answer = equipmentOverview(context)
-  else if (intent.type === 'quality') answer = qualityAnswer(context)
+  else if (intent.type === 'quality') answer = qualityAnswer(context, intent.batchId)
   else if (intent.type === 'alarm') answer = alarmExplanation(context)
   else if (intent.type === 'priority') answer = priorityAnswer(context)
   else answer = { conclusion: '当前问题未匹配到明确工业对象。', basis: [], state: '未执行推测，避免编造仿真数据', suggestions: ['请提供生产工序、设备编号、质量批次或报警问题'], evidence: [], navigation: [] }

@@ -7,6 +7,21 @@ function nowText(date = new Date()) { const pad = (v) => String(v).padStart(2, '
 function readEvents() { try { const data = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '[]'); return Array.isArray(data) ? data : [] } catch { return [] } }
 function saveEvents(events) { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(events)); window.dispatchEvent(new CustomEvent(QUALITY_EVENT_CHANGED, { detail: clone(events) })) }
 function nextId(events) { const now = new Date(); const day = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`; return `QE-${day}-${String(events.length+1).padStart(3,'0')}` }
+function abnormalSignature(items = []) { return items.map((item) => item.key).sort().join('|') || 'general_quality_risk' }
+function resolveEventType(requiresReinspection) { return requiresReinspection ? 'batch_reinspection' : 'quality_abnormal' }
+function resolveSourceQualityVersion(data, eventType) {
+  if (eventType === 'batch_reinspection') return `initial:${data.id || data.batchId}`
+  const latest = data.inspectionHistory?.[data.inspectionHistory.length - 1]
+  return `inspection:${latest?.taskId || latest?.time || data.createTime || data.id}`
+}
+function buildEventKey({ batchId, qualityRecordId, eventType, sourceQualityVersion, signature }) {
+  return [batchId, qualityRecordId || '', eventType, sourceQualityVersion, signature].join('::')
+}
+function legacyEventKey(event) {
+  const eventType = event.eventType || ((event.abnormalItems || []).some((item) => item.key === 'reinspectionRequired') ? 'batch_reinspection' : 'quality_abnormal')
+  const sourceQualityVersion = event.sourceQualityVersion || `initial:${event.qualityRecordId || event.batchId}`
+  return buildEventKey({ batchId: event.batchId, qualityRecordId: event.qualityRecordId, eventType, sourceQualityVersion, signature: event.abnormalSignature || abnormalSignature(event.abnormalItems) })
+}
 
 function buildAbnormalItems(data, analysis) {
   const inspection = data.inspection
@@ -16,17 +31,24 @@ function buildAbnormalItems(data, analysis) {
   if (inspection.flatness < .85) items.push({ key: 'flatness', name: '板形指标', value: inspection.flatness, unit: '' })
   if (analysis.abnormalItems.some((item) => item.includes('屈服强度'))) items.push({ key: 'yieldStrength', name: '屈服强度', value: inspection.mechanical.yieldStrength, unit: 'MPa' })
   if (analysis.abnormalItems.some((item) => item.includes('抗拉强度'))) items.push({ key: 'tensileStrength', name: '抗拉强度', value: inspection.mechanical.tensileStrength, unit: 'MPa' })
+  if (analysis.abnormalItems.some((item) => item.includes('综合判定为不合格'))) items.push({ key: 'qualityDisposition', name: '综合判定', value: data.qualityDisposition, unit: '' })
   return items
 }
 
 export function createQualityEvent(data, analysis) {
-  if (!data || !['关注', '异常'].includes(analysis?.qualityLevel?.label)) return { created: false, reason: 'quality_not_abnormal', event: null }
-  const events = readEvents()
-  const duplicate = events.find((item) => item.batchId === data.batchId && item.status !== 'closed')
-  if (duplicate) return { created: false, reason: 'duplicate', event: clone(duplicate) }
+  const requiresReinspection = data?.requiresReinspection === true
+  if (!data || (!requiresReinspection && !['关注', '异常'].includes(analysis?.qualityLevel?.label))) return { created: false, reason: 'quality_not_abnormal', event: null }
   const abnormalItems = buildAbnormalItems(data, analysis)
+  if (requiresReinspection && !abnormalItems.length) abnormalItems.push({ key: 'reinspectionRequired', name: '批次质量复检', value: '待复检', unit: '' })
+  const eventType = resolveEventType(requiresReinspection)
+  const sourceQualityVersion = resolveSourceQualityVersion(data, eventType)
+  const signature = abnormalSignature(abnormalItems)
+  const eventKey = buildEventKey({ batchId: data.batchId, qualityRecordId: data.id, eventType, sourceQualityVersion, signature })
+  const events = readEvents()
+  const duplicate = events.find((item) => (item.eventKey || legacyEventKey(item)) === eventKey)
+  if (duplicate) return { created: false, reason: 'duplicate', event: clone(duplicate) }
   const time = nowText()
-  const event = { id: nextId(events), batchId: data.batchId, qualityRecordId: data.id, steelGrade: data.steelGrade, issueType: 'batch_quality_risk', issueName: '批次质量异常', level: analysis.qualityLevel.label === '异常' ? 'critical' : 'warning', qualityLevel: analysis.qualityLevel.label, description: `批次综合质量评分为 ${analysis.qualityScore}，存在质量评价仿真异常指标。`, abnormalItems, qualityScoreBefore: analysis.qualityScore, status: 'pending', suggestions: abnormalItems.flatMap((item) => item.key === 'thicknessDeviation' ? ['执行厚度复检', '复核精轧工艺参数'] : item.key === 'surfaceDefectRate' ? ['执行表面质量复检'] : item.key === 'flatness' ? ['复核板形检测结果'] : ['复核力学性能检测结果']), relatedInspectionTaskId: null, relatedAlarmId: null, recovery: null, recoveryHistory: [], closeRecord: null, createTime: time, updateTime: time }
+  const event = { id: nextId(events), batchId: data.batchId, qualityRecordId: data.id, eventType, sourceQualityVersion, abnormalSignature: signature, eventKey, steelGrade: data.steelGrade, issueType: 'batch_quality_risk', issueName: '批次质量异常', level: analysis.qualityLevel.label === '异常' ? 'critical' : 'warning', qualityLevel: requiresReinspection ? '关注' : analysis.qualityLevel.label, description: requiresReinspection ? '批次质量分析标记为待复检，已进入质量复检处置流程。' : `批次综合质量评分为 ${analysis.qualityScore}，存在质量评价仿真异常指标。`, abnormalItems, qualityScoreBefore: analysis.qualityScore, status: 'pending', suggestions: abnormalItems.flatMap((item) => item.key === 'thicknessDeviation' ? ['执行厚度复检', '复核精轧工艺参数'] : item.key === 'surfaceDefectRate' ? ['执行表面质量复检'] : item.key === 'flatness' ? ['复核板形检测结果'] : item.key === 'reinspectionRequired' ? ['执行质量复检', '复核批次质量检测报告'] : ['复核力学性能检测结果']), relatedInspectionTaskId: null, relatedAlarmId: null, recovery: null, recoveryHistory: [], closeRecord: null, createTime: time, updateTime: time }
   events.unshift(event); saveEvents(events); return { created: true, reason: 'created', event: clone(event) }
 }
 export function getQualityEvents() { return clone(readEvents()) }

@@ -9,6 +9,7 @@ const defaultQualityData = [
 ]
 
 function clone(value) { return JSON.parse(JSON.stringify(value)) }
+function isUnqualifiedDisposition(value) { return ['unqualified', '不合格'].includes(value) }
 function nowText(date = new Date()) {
   const pad = (value) => String(value).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
@@ -45,9 +46,21 @@ function saveData(records, detail) {
 
 function hydrate(record) {
   const batch = getProductionBatch(record.batchId)
-  if (!batch) return { ...clone(record), orderNo: '', steelGrade: '', specification: '' }
+  if (!batch) return {
+    ...clone(record),
+    orderNo: record.orderNo || '',
+    quantity: record.quantity || 0,
+    steelGrade: record.steelGrade || '',
+    specification: record.specification || '',
+  }
   const plan = getProductionPlans().find((item) => item.id === batch.planId)
-  return { ...clone(record), orderNo: plan?.orderNo || '', quantity: plan?.quantity || 0, steelGrade: batch.steelGrade, specification: batch.specification }
+  return {
+    ...clone(record),
+    orderNo: plan?.orderNo || record.orderNo || '',
+    quantity: plan?.quantity || record.quantity || 0,
+    steelGrade: batch.steelGrade || record.steelGrade || '',
+    specification: batch.specification || record.specification || '',
+  }
 }
 
 export function getQualityData() {
@@ -57,6 +70,77 @@ export function getQualityData() {
 export function getBatchQuality(batchId) {
   const record = readData().find((item) => item.batchId === batchId)
   return record ? hydrate(record) : null
+}
+
+/** 将批次质量分析记录注册为可复检的正式检测记录；同一批次只创建一次。 */
+export function ensureQualityRecord(input = {}) {
+  const batchId = input.batchId || input.batchNo
+  if (!batchId) return { created: false, reason: 'missing_batch_id', record: null }
+
+  const records = readData()
+  const existing = records.find((item) => item.batchId === batchId)
+  if (existing) {
+    const qualityDisposition = input.qualityDisposition || input.qualityStatus || input.status || ''
+    const shouldMarkReinspection = input.requiresReinspection === true && existing.requiresReinspection !== true
+    const shouldSyncUnqualifiedDisposition = isUnqualifiedDisposition(qualityDisposition) && !isUnqualifiedDisposition(existing.qualityDisposition)
+    if (shouldMarkReinspection || shouldSyncUnqualifiedDisposition) {
+      if (shouldMarkReinspection) existing.requiresReinspection = true
+      if (shouldSyncUnqualifiedDisposition) existing.qualityDisposition = qualityDisposition
+      existing.sourceBatchAnalysis = clone(input.sourceBatchAnalysis || existing.sourceBatchAnalysis || {})
+      saveData(records, { batchId, action: shouldSyncUnqualifiedDisposition ? 'sync_quality_disposition' : 'mark_reinspection_required' })
+      return { created: false, reason: 'updated_existing', record: hydrate(existing) }
+    }
+    return { created: false, reason: 'already_exists', record: hydrate(existing) }
+  }
+
+  const numeric = (value) => {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  const thicknessDeviation = numeric(input.thicknessDeviation ?? input.thickness)
+  const surfaceDefectRate = numeric(input.surfaceDefectRate ?? input.defectRate)
+  const flatnessRaw = numeric(input.flatness ?? input.shape)
+  const yieldStrength = numeric(input.yieldStrength ?? input.yield)
+  const tensileStrength = numeric(input.tensileStrength ?? input.tensile)
+  const flatness = flatnessRaw != null && flatnessRaw > 1 ? flatnessRaw / 100 : flatnessRaw
+
+  if ([thicknessDeviation, surfaceDefectRate, flatness, yieldStrength, tensileStrength].some((value) => value == null)) {
+    return { created: false, reason: 'incomplete_inspection', record: null }
+  }
+
+  const datePrefix = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+  const record = {
+    id: `Q-${datePrefix}-${String(records.length + 1).padStart(3, '0')}`,
+    batchId,
+    orderNo: input.orderNo || '',
+    steelGrade: input.steelGrade || '',
+    specification: input.specification || input.spec || '',
+    quantity: numeric(input.quantity) || 0,
+    requiresReinspection: input.requiresReinspection === true,
+    qualityDisposition: input.qualityDisposition || input.qualityStatus || input.status || '',
+    inspection: {
+      thicknessDeviation,
+      surfaceDefectRate,
+      flatness,
+      mechanical: { yieldStrength, tensileStrength },
+      defects: clone(input.defects || {}),
+    },
+    sourceBatchAnalysis: clone(input.sourceBatchAnalysis || {}),
+    createTime: input.createTime || input.time || nowText(),
+  }
+  const analysis = analyzeQualityStatus(hydrate(record))
+  record.inspectionHistory = [{
+    type: 'initial',
+    inspection: clone(record.inspection),
+    score: analysis?.qualityScore ?? null,
+    level: input.statusLabel || input.status || analysis?.qualityLevel?.label || '未评价',
+    source: 'batch_quality_analysis',
+    report: clone(input.sourceBatchAnalysis || {}),
+    time: record.createTime,
+  }]
+  records.unshift(record)
+  saveData(records, { batchId, action: 'register_batch_quality_record' })
+  return { created: true, reason: 'created', record: hydrate(record) }
 }
 
 /** 追加确定性复检结果并更新当前检测值；同一 taskId 只追加一次。 */
@@ -78,6 +162,7 @@ export function appendQualityInspectionResult(input = {}) {
 export function analyzeQualityStatus(data) {
   if (!data?.inspection) return null
   const { thicknessDeviation, surfaceDefectRate, flatness, mechanical } = data.inspection
+  const declaredUnqualified = isUnqualifiedDisposition(data.qualityDisposition)
   const gradeYield = data.steelGrade?.startsWith('Q550') ? 550 : 355
   const tensileRange = data.steelGrade?.startsWith('Q550') ? [670, 830] : [470, 630]
   const abnormalItems = []
@@ -86,11 +171,13 @@ export function analyzeQualityStatus(data) {
   if (flatness < 0.85) abnormalItems.push('板形指标低于 0.85')
   if (mechanical.yieldStrength < gradeYield) abnormalItems.push(`屈服强度低于 ${gradeYield} MPa`)
   if (mechanical.tensileStrength < tensileRange[0] || mechanical.tensileStrength > tensileRange[1]) abnormalItems.push(`抗拉强度不在 ${tensileRange[0]}–${tensileRange[1]} MPa`)
+  if (declaredUnqualified) abnormalItems.push('批次分析综合判定为不合格')
 
   let score = 100 - Math.abs(thicknessDeviation) * 10 - surfaceDefectRate * 2 - Math.max(0, 1 - flatness) * 20
   score -= abnormalItems.length * 8
   const qualityScore = Math.max(0, Math.min(100, Math.round(score)))
-  const level = qualityScore >= 90 ? { key: 'excellent', label: '优秀', color: '#2bd398' }
+  const level = declaredUnqualified ? { key: 'abnormal', label: '异常', color: '#ef6262' }
+    : qualityScore >= 90 ? { key: 'excellent', label: '优秀', color: '#2bd398' }
     : qualityScore >= 80 ? { key: 'qualified', label: '合格', color: '#35a9e9' }
       : qualityScore >= 65 ? { key: 'attention', label: '关注', color: '#ffad45' }
         : { key: 'abnormal', label: '异常', color: '#ef6262' }
